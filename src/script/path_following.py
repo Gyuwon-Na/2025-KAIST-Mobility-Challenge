@@ -29,20 +29,22 @@ class MPCNode(Node):
         self.pub_accel = self.create_publisher(Accel, '/Accel', 10)
         self.sub_pose = self.create_subscription(PoseStamped, '/Ego_pose', self.pose_callback, qos_profile)
         
-        # Global Path 시각화 (초록색)
         latched_qos = QoSProfile(depth=1, durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL)
         self.pub_viz_path = self.create_publisher(Path, '/global_path', latched_qos)
-        
-        # === [추가됨] Local MPC Path 시각화 (파란색) ===
         self.pub_local_path = self.create_publisher(Path, '/mpc_local_path', 10)
 
         self.global_path = utils.load_path_csv(CSV_PATH)
         self.current_pose = None
         self.frame_id = None
-        self.timer = self.create_timer(0.01, self.control_loop) # 100Hz
+        
+        # [핵심 추가] 마지막으로 방문한 인덱스를 기억함 (순서 보장용)
+        self.last_nearest_idx = 0
+        
+        self.current_mode = "unknown" 
+        self.timer = self.create_timer(0.05, self.control_loop) 
         
         if len(self.global_path) > 0:
-            self.get_logger().info("MPC Node Ready. Waiting for Pose...")
+            self.get_logger().info(f"MPC Node Ready. Total Waypoints: {len(self.global_path)}")
 
     def pose_callback(self, msg):
         self.current_pose = msg
@@ -63,29 +65,31 @@ class MPCNode(Node):
         self.pub_viz_path.publish(path_msg)
         
     def publish_local_path(self, pred_path):
-        """MPC가 예측한 미래 궤적을 RViz에 표시"""
         if not pred_path or self.frame_id is None: return
-        
         path_msg = Path()
         path_msg.header.frame_id = self.frame_id
         path_msg.header.stamp = self.get_clock().now().to_msg()
-        
         for pt in pred_path:
             pose = PoseStamped()
             pose.header.frame_id = self.frame_id
             pose.pose.position.x = pt[0]
             pose.pose.position.y = pt[1]
             path_msg.poses.append(pose)
-            
         self.pub_local_path.publish(path_msg)
 
-    def get_curvature(self, idx, lookahead_steps=5):
+    def get_curvature(self, idx, lookahead_steps=20):
         if idx + lookahead_steps >= len(self.global_path): return 0.0
         curr_yaw = self.global_path[idx][2]
-        future_yaw = self.global_path[idx+lookahead_steps][2]
-        diff = abs(future_yaw - curr_yaw)
-        while diff > np.pi: diff -= 2*np.pi
-        return abs(diff)
+        max_diff = 0.0
+        for i in range(1, lookahead_steps, 5): 
+            check_idx = idx + i
+            if check_idx >= len(self.global_path): break
+            future_yaw = self.global_path[check_idx][2]
+            diff = abs(future_yaw - curr_yaw)
+            while diff > np.pi: diff -= 2*np.pi
+            if abs(diff) > max_diff:
+                max_diff = abs(diff)
+        return max_diff
 
     def control_loop(self):
         if self.current_pose is None or len(self.global_path) == 0: return
@@ -95,51 +99,70 @@ class MPCNode(Node):
         ryaw = utils.euler_from_quaternion(self.current_pose.pose.orientation)
         current_state = [rx, ry, ryaw]
 
-        # 1. Nearest Point 찾기
-        dists = np.linalg.norm(self.global_path[:, :2] - np.array([rx, ry]), axis=1)
-        min_idx = np.argmin(dists)
-
-        # 2. 전략 선택 (곡률 기반)
-        if self.get_curvature(min_idx) > 0.2:
-            self.mpc.set_strategy('curve')
+        # === [핵심 변경 1] 순차적 Nearest Point 찾기 (Window Search) ===
+        # 전체 경로를 뒤지는 게 아니라, 이전 위치(last_nearest_idx)부터 
+        # 앞으로 50개(약 0.5m ~ 1m) 정도만 뒤집니다.
+        # 이렇게 하면 절대 뒷걸음질 치거나 옆길로 새지 않고 인덱스가 1씩 증가합니다.
+        
+        search_start = self.last_nearest_idx
+        # 경로 끝에 다다르면 검색 범위를 끝까지만 제한
+        search_end = min(self.last_nearest_idx + 100, len(self.global_path)) 
+        
+        # 검색 범위 내의 좌표들만 추출
+        search_segment = self.global_path[search_start:search_end, :2]
+        
+        if len(search_segment) == 0:
+            # 경로 끝에 도달했거나 에러 상황 -> 멈추거나 마지막 점 유지
+            min_idx = len(self.global_path) - 1
         else:
-            self.mpc.set_strategy('straight')
+            # 부분 경로 내에서 가장 가까운 점 찾기
+            dists = np.linalg.norm(search_segment - np.array([rx, ry]), axis=1)
+            local_min_idx = np.argmin(dists)
+            
+            # 실제 전체 인덱스로 변환
+            min_idx = search_start + local_min_idx
+            
+            # [중요] 상태 업데이트: 다음번엔 여기서부터 찾음
+            self.last_nearest_idx = min_idx
 
-        # 3. Reference Path 구성 (거리 기반으로 더 정확하게 추출)
+        # 2. 모드 결정
+        curvature = self.get_curvature(min_idx, lookahead_steps=30)
+        new_mode = 'straight'
+        if curvature > 0.2: new_mode = 'curve'
+        
+        if new_mode != self.current_mode:
+            self.get_logger().info(f">>> [MODE] {self.current_mode} -> {new_mode} (Curv: {curvature:.4f})")
+            self.current_mode = new_mode
+            self.mpc.set_strategy(new_mode)
+
+        # 3. Reference Path 구성 (물리 법칙 준수)
         ref_segment = []
         path_len = len(self.global_path)
         
-        # 웨이포인트 간격이 약 0.01m(1cm)라고 가정할 때, 
-        # 속도(m/s) * 시간(dt) 만큼 인덱스를 건너뛰어야 물리적으로 맞음
-        # 예: 5m/s * 0.1s = 0.5m 이동 -> 약 50 인덱스 필요
+        target_v = self.mpc.target_speed 
+        dt_dist = target_v * self.mpc.dt
+        point_spacing = 0.01 
         
-        current_speed = max(self.mpc.prev_v, 1.0) # 최소 1.0으로 가정
-        step_distance = current_speed * self.mpc.dt # 한 스텝당 이동 거리 (m)
-        point_spacing = 0.01 # CSV 웨이포인트 간격 (1cm 가정)
+        step = int(dt_dist / point_spacing)
+        if step < 1: step = 1
         
-        index_step = int(step_distance / point_spacing)
-        if index_step < 1: index_step = 1
-
+        # [중요] MPC는 미래를 봐야 하므로, 현재 min_idx(순서대로 찾은 것)부터
+        # 물리적 거리(step)만큼 띄우면서 점을 골라 담습니다.
         for i in range(self.mpc.N):
-            target_idx = min_idx + (i * index_step)
+            target_idx = min_idx + (i * step)
             if target_idx >= path_len: target_idx = path_len - 1
             ref_segment.append(self.global_path[target_idx])
         
-        # 4. MPC Solve (수정된 solve 함수 호출)
+        # 4. Solve
         v_cmd, w_cmd, pred_path = self.mpc.solve(current_state, np.array(ref_segment))
         v_final, w_final = self.mpc.apply_smoothing(v_cmd, w_cmd)
 
-        # 5. Local Path 시각화
         self.publish_local_path(pred_path)
 
-        # 6. 제어 명령 발행 및 로그 출력
         cmd = Accel()
         cmd.linear.x = float(v_final)
         cmd.angular.z = float(w_final)
         self.pub_accel.publish(cmd)
-        
-        # 디버깅: 값이 0이거나 너무 작으면 로그로 확인
-        # self.get_logger().info(f"V: {v_final:.2f}, W: {w_final:.2f}, Idx: {min_idx}")
 
 def main(args=None):
     rclpy.init(args=args)

@@ -4,7 +4,7 @@ from scipy.optimize import minimize
 class MPCSolver:
     def __init__(self):
         self.dt = 0.1
-        self.N = 10    # 예측 구간 (짧게 유지)
+        self.N = 20    # 예측 구간 (짧게 유지)
         
         # [수정됨] 맵이 작으므로 속도를 5.0 -> 1.0 (m/s)로 대폭 낮춤
         self.target_speed = 1.0 
