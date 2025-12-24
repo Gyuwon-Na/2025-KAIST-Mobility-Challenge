@@ -3,167 +3,147 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from geometry_msgs.msg import Accel, PoseStamped
 from nav_msgs.msg import Path
-import csv
-import math
 import numpy as np
 import os
+import sys
 
-# current_dir: src/script
 current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 
+from MPC_solver import MPCSolver
+import utils
 
-CSV_PATH = os.path.join(current_dir, '../path/problem1-1_CAV1.csv')
-LOOKAHEAD_DIST = 2.5
-TARGET_SPEED = 5.0
+CSV_PATH = os.path.normpath(os.path.join(current_dir, '../path/problem1-1_CAV1.csv'))
 
-class PathFollower(Node):
+class MPCNode(Node):
     def __init__(self):
-        super().__init__('path_follower_node')
+        super().__init__('mpc_path_follower')
         
-        # 1. QoS 설정
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
 
-        # 2. Publisher & Subscriber
+        self.mpc = MPCSolver()
         self.pub_accel = self.create_publisher(Accel, '/Accel', 10)
+        self.sub_pose = self.create_subscription(PoseStamped, '/Ego_pose', self.pose_callback, qos_profile)
         
+        # Global Path 시각화 (초록색)
         latched_qos = QoSProfile(depth=1, durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL)
         self.pub_viz_path = self.create_publisher(Path, '/global_path', latched_qos)
         
-        self.sub_pose = self.create_subscription(PoseStamped, '/Ego_pose', self.pose_callback, qos_profile)
-        
-        # 3. 데이터 초기화
-        self.np_path = self.load_path_csv(CSV_PATH)
+        # === [추가됨] Local MPC Path 시각화 (파란색) ===
+        self.pub_local_path = self.create_publisher(Path, '/mpc_local_path', 10)
+
+        self.global_path = utils.load_path_csv(CSV_PATH)
         self.current_pose = None
-        self.detected_frame_id = None 
+        self.frame_id = None
+        self.timer = self.create_timer(0.01, self.control_loop) # 100Hz
         
-        self.timer = self.create_timer(0.05, self.control_loop)
-        self.viz_timer = self.create_timer(1.0, self.viz_loop)
-
-        if len(self.np_path) > 0:
-            self.get_logger().info(f"Ready. Loaded {len(self.np_path)} points. Waiting for Pose...")
-        else:
-            self.get_logger().error("Path is empty! Please check CSV file path and content.")
-
-    def load_path_csv(self, file_path):
-        """CSV 파일을 읽어오며 헤더와 NaN 값을 모두 처리합니다."""
-        path = []
-        try:
-            with open(file_path, 'r') as f:
-                reader = csv.reader(f)
-                
-                # [중요] 첫 번째 줄(헤더 X, Y) 건너뛰기
-                header = next(reader, None)
-                
-                for i, row in enumerate(reader):
-                    # 빈 줄 체크
-                    if not row or len(row) < 2: continue
-                    
-                    try:
-                        # 문자열을 실수(float)로 변환
-                        s_x = row[0].strip()
-                        s_y = row[1].strip()
-                        
-                        # 빈 문자열 체크
-                        if not s_x or not s_y: continue
-
-                        x = float(s_x)
-                        y = float(s_y)
-                        
-                        # [핵심] NaN(숫자 아님)이나 무한대(Inf)가 있으면 건너뜀
-                        if math.isnan(x) or math.isnan(y) or math.isinf(x) or math.isinf(y):
-                            self.get_logger().warn(f"Skipping invalid data at line {i+2}")
-                            continue
-                            
-                        path.append([x, y])
-                    except ValueError:
-                        self.get_logger().warn(f"Skipping non-numeric data at line {i+2}: {row}")
-                        continue
-                        
-            return np.array(path)
-        except Exception as e:
-            self.get_logger().error(f"Failed to load CSV: {e}")
-            return np.array([])
+        if len(self.global_path) > 0:
+            self.get_logger().info("MPC Node Ready. Waiting for Pose...")
 
     def pose_callback(self, msg):
-        if math.isnan(msg.pose.position.x): return
         self.current_pose = msg
-        if self.detected_frame_id is None:
-            self.detected_frame_id = msg.header.frame_id
-            self.get_logger().info(f"Frame ID Detected: {self.detected_frame_id}")
+        if self.frame_id is None:
+            self.frame_id = msg.header.frame_id
+            self.publish_viz_path()
 
-    def euler_from_quaternion(self, q):
-        t3 = +2.0 * (q.w * q.z + q.x * q.y)
-        t4 = +1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        return math.atan2(t3, t4)
-
-    def viz_loop(self):
-        if self.detected_frame_id is None or len(self.np_path) == 0:
-            return
-
+    def publish_viz_path(self):
         path_msg = Path()
-        path_msg.header.frame_id = self.detected_frame_id
+        path_msg.header.frame_id = self.frame_id
         path_msg.header.stamp = self.get_clock().now().to_msg()
-        
-        for pt in self.np_path:
+        for pt in self.global_path:
             pose = PoseStamped()
-            pose.header.frame_id = self.detected_frame_id
+            pose.header.frame_id = self.frame_id
             pose.pose.position.x = pt[0]
             pose.pose.position.y = pt[1]
-            pose.pose.orientation.w = 1.0 
+            path_msg.poses.append(pose)
+        self.pub_viz_path.publish(path_msg)
+        
+    def publish_local_path(self, pred_path):
+        """MPC가 예측한 미래 궤적을 RViz에 표시"""
+        if not pred_path or self.frame_id is None: return
+        
+        path_msg = Path()
+        path_msg.header.frame_id = self.frame_id
+        path_msg.header.stamp = self.get_clock().now().to_msg()
+        
+        for pt in pred_path:
+            pose = PoseStamped()
+            pose.header.frame_id = self.frame_id
+            pose.pose.position.x = pt[0]
+            pose.pose.position.y = pt[1]
             path_msg.poses.append(pose)
             
-        self.pub_viz_path.publish(path_msg)
+        self.pub_local_path.publish(path_msg)
+
+    def get_curvature(self, idx, lookahead_steps=5):
+        if idx + lookahead_steps >= len(self.global_path): return 0.0
+        curr_yaw = self.global_path[idx][2]
+        future_yaw = self.global_path[idx+lookahead_steps][2]
+        diff = abs(future_yaw - curr_yaw)
+        while diff > np.pi: diff -= 2*np.pi
+        return abs(diff)
 
     def control_loop(self):
-        if self.current_pose is None or len(self.np_path) == 0:
-            return
+        if self.current_pose is None or len(self.global_path) == 0: return
 
-        curr_x = self.current_pose.pose.position.x
-        curr_y = self.current_pose.pose.position.y
-        q = self.current_pose.pose.orientation
-        curr_yaw = self.euler_from_quaternion(q)
+        rx = self.current_pose.pose.position.x
+        ry = self.current_pose.pose.position.y
+        ryaw = utils.euler_from_quaternion(self.current_pose.pose.orientation)
+        current_state = [rx, ry, ryaw]
 
-        # 거리 계산
-        dists = np.linalg.norm(self.np_path - np.array([curr_x, curr_y]), axis=1)
+        # 1. Nearest Point 찾기
+        dists = np.linalg.norm(self.global_path[:, :2] - np.array([rx, ry]), axis=1)
         min_idx = np.argmin(dists)
 
-        target_idx = min_idx
-        found = False
-        for i in range(min_idx, len(self.np_path)):
-            if np.linalg.norm(self.np_path[i] - np.array([curr_x, curr_y])) > LOOKAHEAD_DIST:
-                target_idx = i
-                found = True
-                break
+        # 2. 전략 선택 (곡률 기반)
+        if self.get_curvature(min_idx) > 0.2:
+            self.mpc.set_strategy('curve')
+        else:
+            self.mpc.set_strategy('straight')
+
+        # 3. Reference Path 구성 (거리 기반으로 더 정확하게 추출)
+        ref_segment = []
+        path_len = len(self.global_path)
         
-        if not found: target_idx = len(self.np_path) - 1
-            
-        target_pt = self.np_path[target_idx]
-        angle_to_target = math.atan2(target_pt[1] - curr_y, target_pt[0] - curr_x)
-        heading_error = angle_to_target - curr_yaw
-
-        while heading_error > math.pi: heading_error -= 2 * math.pi
-        while heading_error < -math.pi: heading_error += 2 * math.pi
-
-        # [안전장치] 계산 결과가 안전한지 확인
-        steering_cmd = 2.0 * heading_error
+        # 웨이포인트 간격이 약 0.01m(1cm)라고 가정할 때, 
+        # 속도(m/s) * 시간(dt) 만큼 인덱스를 건너뛰어야 물리적으로 맞음
+        # 예: 5m/s * 0.1s = 0.5m 이동 -> 약 50 인덱스 필요
         
-        # NaN 발생 시 정지
-        if math.isnan(steering_cmd) or math.isinf(steering_cmd):
-            steering_cmd = 0.0 
+        current_speed = max(self.mpc.prev_v, 1.0) # 최소 1.0으로 가정
+        step_distance = current_speed * self.mpc.dt # 한 스텝당 이동 거리 (m)
+        point_spacing = 0.01 # CSV 웨이포인트 간격 (1cm 가정)
+        
+        index_step = int(step_distance / point_spacing)
+        if index_step < 1: index_step = 1
 
+        for i in range(self.mpc.N):
+            target_idx = min_idx + (i * index_step)
+            if target_idx >= path_len: target_idx = path_len - 1
+            ref_segment.append(self.global_path[target_idx])
+        
+        # 4. MPC Solve (수정된 solve 함수 호출)
+        v_cmd, w_cmd, pred_path = self.mpc.solve(current_state, np.array(ref_segment))
+        v_final, w_final = self.mpc.apply_smoothing(v_cmd, w_cmd)
+
+        # 5. Local Path 시각화
+        self.publish_local_path(pred_path)
+
+        # 6. 제어 명령 발행 및 로그 출력
         cmd = Accel()
-        cmd.linear.x = float(TARGET_SPEED)
-        cmd.angular.z = float(steering_cmd)
-        
+        cmd.linear.x = float(v_final)
+        cmd.angular.z = float(w_final)
         self.pub_accel.publish(cmd)
+        
+        # 디버깅: 값이 0이거나 너무 작으면 로그로 확인
+        # self.get_logger().info(f"V: {v_final:.2f}, W: {w_final:.2f}, Idx: {min_idx}")
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PathFollower()
+    node = MPCNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
