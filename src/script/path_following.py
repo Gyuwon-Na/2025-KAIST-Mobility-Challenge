@@ -16,7 +16,7 @@ from MPC_solver import MPCSolver
 import utils
 
 CSV_PATH = os.path.normpath(os.path.join(current_dir, "../path/problem1-1_CAV1.csv"))
-CONFIG_PATH = os.path.normpath(os.path.join(current_dir, "mpc_config.json"))
+CONFIG_PATH = os.path.normpath(os.path.join(current_dir, "../mpc_config.json"))
 
 
 class PathFollowerNode(Node):

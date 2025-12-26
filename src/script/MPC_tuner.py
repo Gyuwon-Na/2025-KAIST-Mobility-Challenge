@@ -14,7 +14,7 @@ class MPCTuner(Node):
         self.pub = self.create_publisher(String, "/mpc_params", 10)
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.config_path = os.path.join(current_dir, "mpc_config.json")
+        self.config_path = os.path.join(current_dir, "../mpc_config.json")
 
         self.root = tk.Tk()
         self.root.title("MPC Config Manager")

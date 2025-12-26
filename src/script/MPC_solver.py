@@ -11,7 +11,7 @@ class MPCSolver:
         self.Lf = 2.67
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.config_path = os.path.join(current_dir, "mpc_config.json")
+        self.config_path = os.path.join(current_dir, "../mpc_config.json")
 
         self.load_config()
 
