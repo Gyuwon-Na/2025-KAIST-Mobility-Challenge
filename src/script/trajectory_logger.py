@@ -11,14 +11,13 @@ import matplotlib.pyplot as plt
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
-import utils  # utils.py 재사용
+import utils
 
 # 저장 경로 설정
-CSV_PATH = os.path.normpath(os.path.join(current_dir, "../path/problem1-1_CAV1.csv"))
-LOG_OUTPUT_PATH = os.path.normpath(
-    os.path.join(current_dir, "../path/trajectory_log.csv")
-)
-IMG_OUTPUT_PATH = os.path.normpath(os.path.join(current_dir, "trajectory_result.png"))
+PATH_DIR = os.path.normpath(os.path.join(current_dir, "../path"))
+CSV_LOG_PATH = os.path.join(current_dir, "../log/trajectory_log.csv")
+IMG_OUTPUT_PATH = os.path.join(current_dir, "../log/trajectory_result.png")
+GLOBAL_PATH_FILE = os.path.join(PATH_DIR, "problem1-1_CAV1.csv")
 
 
 class TrajectoryLogger(Node):
@@ -31,7 +30,6 @@ class TrajectoryLogger(Node):
             depth=10,
         )
 
-        # 데이터 구독
         self.sub_pose = self.create_subscription(
             PoseStamped, "/Ego_pose", self.pose_callback, qos_profile
         )
@@ -39,93 +37,69 @@ class TrajectoryLogger(Node):
             String, "/mpc_mode", self.mode_callback, 10
         )
 
-        # 데이터 저장소
         self.history_x = []
         self.history_y = []
         self.history_mode = []
-        self.current_mode = "straight"  # 기본값
+        self.current_mode = "straight"
 
-        # 배경용 글로벌 패스 로드
-        self.global_path = utils.load_path_csv(CSV_PATH)
-        self.get_logger().info("Trajectory Logger Started. Waiting for data...")
+        self.global_path = utils.load_path_csv(GLOBAL_PATH_FILE)
+        self.get_logger().info("Logger Ready. Will save to: " + CSV_LOG_PATH)
 
     def mode_callback(self, msg):
         self.current_mode = msg.data
 
     def pose_callback(self, msg):
-        # 위치 데이터가 들어올 때 현재 모드와 함께 저장
-        x = msg.pose.position.x
-        y = msg.pose.position.y
-
-        self.history_x.append(x)
-        self.history_y.append(y)
+        self.history_x.append(msg.pose.position.x)
+        self.history_y.append(msg.pose.position.y)
         self.history_mode.append(self.current_mode)
 
     def save_results(self):
         if not self.history_x:
-            self.get_logger().warn("No data recorded.")
             return
 
-        self.get_logger().info("Saving results...")
+        self.get_logger().info("Saving logs...")
 
-        # 1. CSV 저장
+        # 1. CSV 저장 (path 폴더)
         try:
-            with open(LOG_OUTPUT_PATH, "w", newline="") as f:
+            with open(CSV_LOG_PATH, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["x", "y", "mode"])
                 for x, y, m in zip(self.history_x, self.history_y, self.history_mode):
                     writer.writerow([x, y, m])
-            self.get_logger().info(f"CSV Saved: {LOG_OUTPUT_PATH}")
+            self.get_logger().info(f"Saved CSV to {CSV_LOG_PATH}")
         except Exception as e:
-            self.get_logger().error(f"Failed to save CSV: {e}")
+            self.get_logger().error(f"CSV Save Error: {e}")
 
-        # 2. 이미지 생성 및 저장
+        # 2. 이미지 저장 (script 폴더)
         try:
-            plt.figure(figsize=(12, 12))
-
-            # 배경 (글로벌 패스)
+            plt.figure(figsize=(10, 10))
             if len(self.global_path) > 0:
                 plt.plot(
                     self.global_path[:, 0],
                     self.global_path[:, 1],
                     color="lightgray",
                     linewidth=3,
-                    label="Global Path",
                 )
 
-            hx = np.array(self.history_x)
-            hy = np.array(self.history_y)
-            hm = np.array(self.history_mode)
-
-            # 모드별 시각화
+            hx, hy, hm = (
+                np.array(self.history_x),
+                np.array(self.history_y),
+                np.array(self.history_mode),
+            )
             mask_s = hm == "straight"
             mask_c = hm == "curve"
 
             if np.any(mask_s):
-                plt.scatter(
-                    hx[mask_s],
-                    hy[mask_s],
-                    c="black",
-                    s=5,
-                    label="Straight Mode",
-                    zorder=2,
-                )
+                plt.scatter(hx[mask_s], hy[mask_s], c="black", s=3)
             if np.any(mask_c):
-                plt.scatter(
-                    hx[mask_c], hy[mask_c], c="gold", s=10, label="Curve Mode", zorder=3
-                )
+                plt.scatter(hx[mask_c], hy[mask_c], c="gold", s=8)
 
-            plt.legend()
             plt.axis("equal")
-            plt.title("Driving Trajectory Analysis")
-            plt.grid(True, linestyle="--", alpha=0.5)
-
             plt.savefig(IMG_OUTPUT_PATH)
-            self.get_logger().info(f"Image Saved: {IMG_OUTPUT_PATH}")
-            plt.close()  # 메모리 해제
-
+            self.get_logger().info(f"Saved Image to {IMG_OUTPUT_PATH}")
+            plt.close()
         except Exception as e:
-            self.get_logger().error(f"Failed to save Image: {e}")
+            self.get_logger().error(f"Image Save Error: {e}")
 
 
 def main(args=None):
@@ -136,7 +110,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.save_results()  # 종료 시 저장 함수 호출
+        node.save_results()
         node.destroy_node()
         rclpy.shutdown()
 

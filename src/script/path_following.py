@@ -7,8 +7,7 @@ from nav_msgs.msg import Path
 import numpy as np
 import os
 import sys
-import csv
-import json  # JSON 파싱용
+import json
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
@@ -17,7 +16,7 @@ from MPC_solver import MPCSolver
 import utils
 
 CSV_PATH = os.path.normpath(os.path.join(current_dir, "../path/problem1-1_CAV1.csv"))
-LOG_PATH = os.path.normpath(os.path.join(current_dir, "trajectory_log.csv"))
+CONFIG_PATH = os.path.normpath(os.path.join(current_dir, "mpc_config.json"))
 
 
 class PathFollowerNode(Node):
@@ -32,7 +31,6 @@ class PathFollowerNode(Node):
         self.pub_accel = self.create_publisher(Accel, "/Accel", 10)
         self.pub_mode = self.create_publisher(String, "/mpc_mode", 10)
 
-        # [추가] 튜닝 파라미터 구독
         self.sub_params = self.create_subscription(
             String, "/mpc_params", self.param_callback, 10
         )
@@ -47,15 +45,11 @@ class PathFollowerNode(Node):
         self.global_path = utils.load_path_csv(CSV_PATH)
         self.last_nearest_idx = 0
         self.current_pose = None
+
+        # [수정] 프레임 ID 초기화
         self.frame_id = "world"
 
-        # [튜닝용 변수] 초기값
-        self.look_curve = 35
-        self.look_straight = 70
-
-        self.history_x = []
-        self.history_y = []
-        self.history_mode = []
+        self.load_look_ahead()
 
         if len(self.global_path) > 0:
             self.get_logger().info(f"Loaded {len(self.global_path)} points.")
@@ -63,17 +57,24 @@ class PathFollowerNode(Node):
         self.viz_timer = self.create_timer(1.0, self.publish_global_path)
         self.timer = self.create_timer(0.05, self.control_loop)
 
+    def load_look_ahead(self):
+        try:
+            with open(CONFIG_PATH, "r") as f:
+                data = json.load(f)
+                self.look_curve = data["curve"]["look_ahead"]
+                self.look_straight = data["straight"]["look_ahead"]
+        except:
+            self.look_curve = 35
+            self.look_straight = 70
+
     def param_callback(self, msg):
-        """GUI에서 보낸 파라미터를 적용"""
         try:
             data = json.loads(msg.data)
-            # Look ahead 업데이트
             self.look_curve = data["c_look"]
             self.look_straight = data["s_look"]
-            # MPC 내부 파라미터 업데이트
             self.mpc.update_params(data)
-        except Exception as e:
-            self.get_logger().error(f"Param update failed: {e}")
+        except Exception:
+            pass
 
     def pose_callback(self, msg):
         self.current_pose = msg
@@ -125,7 +126,6 @@ class PathFollowerNode(Node):
         while yaw_diff > np.pi:
             yaw_diff -= 2 * np.pi
 
-        # [수정] 튜닝된 look_ahead 값 사용
         if abs(yaw_diff) > 0.1:
             mode = "curve"
             look_ahead = self.look_curve
@@ -147,14 +147,13 @@ class PathFollowerNode(Node):
             return
 
         coeffs = np.polyfit(pts_local[:, 0], pts_local[:, 1], 3)
+
+        # [복구 완료] 불안정한 current_velocity 대신 MPC 내부 상태(prev_v) 사용
+        # 이 부분이 변경되어 로컬 패스가 안 떴던 것입니다.
         v_f, w_f, pred_path_local = self.mpc.solve(
             [0.0, 0.0, 0.0, self.mpc.prev_v], coeffs
         )
         self.mpc.prev_v = v_f
-
-        self.history_x.append(rx)
-        self.history_y.append(ry)
-        self.history_mode.append(mode)
 
         self.publish_local_path(pred_path_local, [rx, ry, ryaw])
 
@@ -162,19 +161,6 @@ class PathFollowerNode(Node):
         cmd.linear.x = float(v_f)
         cmd.angular.z = float(w_f)
         self.pub_accel.publish(cmd)
-
-    def save_trajectory_log(self):
-        if not self.history_x:
-            return
-        try:
-            with open(LOG_PATH, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(["x", "y", "mode"])
-                for x, y, m in zip(self.history_x, self.history_y, self.history_mode):
-                    writer.writerow([x, y, m])
-            self.get_logger().info(f"Trajectory Log Saved: {LOG_PATH}")
-        except Exception as e:
-            self.get_logger().error(f"Failed to save log: {e}")
 
     def stop_vehicle(self):
         cmd = Accel()
@@ -190,7 +176,6 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.save_trajectory_log()
         node.stop_vehicle()
         node.destroy_node()
         rclpy.shutdown()

@@ -1,0 +1,15 @@
+{
+    "curve": {
+        "speed": 0.4,
+        "w_cte": 77000.0,
+        "w_delta": 0.0,
+        "w_delta_d": 110.0,
+        "look_ahead": 35
+    },
+    "straight": {
+        "speed": 1.5,
+        "w_cte": 20000.0,
+        "w_delta_d": 2000.0,
+        "look_ahead": 70
+    }
+}
