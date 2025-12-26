@@ -73,6 +73,24 @@ class TrajectoryLogger(Node):
         # 2. 이미지 저장 (script 폴더)
         try:
             plt.figure(figsize=(10, 10))
+            # ===== Grid (중요) =====
+            plt.grid(
+                True,
+                which="both",
+                linestyle="--",
+                linewidth=0.5,
+                alpha=0.5,
+            )
+
+            # minor grid까지 켜면 MPC 미세 차이 비교에 좋음
+            plt.minorticks_on()
+            plt.grid(
+                True,
+                which="minor",
+                linestyle=":",
+                linewidth=0.3,
+                alpha=0.3,
+            )
             if len(self.global_path) > 0:
                 plt.plot(
                     self.global_path[:, 0],
