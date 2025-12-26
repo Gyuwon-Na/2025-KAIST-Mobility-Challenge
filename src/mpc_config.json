@@ -7,9 +7,9 @@
         "look_ahead": 25
     },
     "straight": {
-        "speed": 1.2,
-        "w_cte": 20000.0,
+        "speed": 1.0,
+        "w_cte": 50000.0,
         "w_delta_d": 2000.0,
-        "look_ahead": 70
+        "look_ahead": 45
     }
 }
