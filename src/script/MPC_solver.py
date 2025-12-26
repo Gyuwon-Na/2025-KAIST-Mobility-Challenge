@@ -26,7 +26,6 @@ class MPCSolver:
 
             self.param_curve = {
                 "w_cte": config["curve"]["w_cte"],
-                # [수정] * 0.6 제거 -> 1:1 비율로 복구 (헤딩 정렬 강화)
                 "w_epsi": config["curve"]["w_cte"],
                 "w_v": 10.0,
                 "w_delta": config["curve"]["w_delta"],
@@ -36,7 +35,6 @@ class MPCSolver:
 
             self.param_straight = {
                 "w_cte": config["straight"]["w_cte"],
-                # [수정] 1:1 비율 유지
                 "w_epsi": config["straight"]["w_cte"],
                 "w_v": 50.0,
                 "w_delta": 100.0,
@@ -46,7 +44,7 @@ class MPCSolver:
             print(f"[MPC] Configuration loaded successfully.")
         except Exception as e:
             print(f"[MPC Error] Config load failed: {e}")
-            # 로드 실패 시에도 1:1 비율 유지하도록 수정
+
             self.param_curve = {
                 "w_cte": 50000,
                 "w_epsi": 50000,

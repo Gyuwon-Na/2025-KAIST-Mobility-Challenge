@@ -46,10 +46,12 @@ class PathFollowerNode(Node):
         self.last_nearest_idx = 0
         self.current_pose = None
 
-        # [수정] 프레임 ID 초기화
         self.frame_id = "world"
 
         self.load_look_ahead()
+
+        # [추가] 현재 모드 상태 기억용 변수
+        self.current_mode_state = "straight"
 
         if len(self.global_path) > 0:
             self.get_logger().info(f"Loaded {len(self.global_path)} points.")
@@ -117,7 +119,8 @@ class PathFollowerNode(Node):
         dists = np.linalg.norm(self.global_path[:, :2] - np.array([rx, ry]), axis=1)
         min_idx = np.argmin(dists)
 
-        check_dist = 40
+        # check_dist는 넉넉하게 유지 (직선에서 코너를 미리 발견하기 위해)
+        check_dist = 120
         check_idx = min(min_idx + check_dist, len(self.global_path) - 1)
 
         yaw_curr = self.global_path[min_idx][2]
@@ -125,12 +128,23 @@ class PathFollowerNode(Node):
         yaw_diff = abs(yaw_future - yaw_curr)
         while yaw_diff > np.pi:
             yaw_diff -= 2 * np.pi
+        yaw_diff = abs(yaw_diff)
+        # [수정] 히스테리시스 로직 완화
+        if self.current_mode_state == "straight":
+            if yaw_diff > 0.1:  # 진입 조건 (유지)
+                self.current_mode_state = "curve"
+        else:  # curve state
+            # [기존] if yaw_diff < 0.05:  <-- 너무 빡빡해서 탈출을 못함
+            # [변경] 0.12로 변경. (0.1보다 약간만 커도 탈출 허용)
+            # 즉, "곡률이 많이 줄어들면 바로 직선 모드로 전환해라"는 뜻
+            if yaw_diff < 0.12:
+                self.current_mode_state = "straight"
 
-        if abs(yaw_diff) > 0.1:
-            mode = "curve"
+        mode = self.current_mode_state
+
+        if mode == "curve":
             look_ahead = self.look_curve
         else:
-            mode = "straight"
             look_ahead = self.look_straight
 
         self.mpc.set_mode(mode)
@@ -147,9 +161,6 @@ class PathFollowerNode(Node):
             return
 
         coeffs = np.polyfit(pts_local[:, 0], pts_local[:, 1], 3)
-
-        # [복구 완료] 불안정한 current_velocity 대신 MPC 내부 상태(prev_v) 사용
-        # 이 부분이 변경되어 로컬 패스가 안 떴던 것입니다.
         v_f, w_f, pred_path_local = self.mpc.solve(
             [0.0, 0.0, 0.0, self.mpc.prev_v], coeffs
         )
