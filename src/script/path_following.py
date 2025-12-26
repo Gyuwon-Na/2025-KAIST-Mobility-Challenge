@@ -117,7 +117,10 @@ class PathFollowerNode(Node):
         dists = np.linalg.norm(self.global_path[:, :2] - np.array([rx, ry]), axis=1)
         min_idx = np.argmin(dists)
 
-        check_dist = 40
+        # [수정] 감지 거리를 40 -> 100으로 대폭 늘림
+        # 이유: 직선 속도(1.5)가 빠르므로, 훨씬 더 멀리서부터 코너를 감지해야
+        # 미리 감속(0.4)하고 핸들을 준비할 수 있음.
+        check_dist = 80
         check_idx = min(min_idx + check_dist, len(self.global_path) - 1)
 
         yaw_curr = self.global_path[min_idx][2]
