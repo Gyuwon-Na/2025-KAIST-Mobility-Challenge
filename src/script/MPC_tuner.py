@@ -29,9 +29,12 @@ class MPCTuner(Node):
         self.c_speed = self.create_slider(
             "Speed", 0.1, 1.5, self.config_data["curve"]["speed"], 0.1
         )
+
+        # [수정] 최대값을 100,000 -> 300,000으로 변경 (20만 수용 가능하도록)
         self.c_cte = self.create_slider(
-            "W_CTE", 1000, 100000, self.config_data["curve"]["w_cte"], 1000
+            "W_CTE", 1000, 300000, self.config_data["curve"]["w_cte"], 1000
         )
+
         self.c_delta = self.create_slider(
             "W_Delta", 0, 1000, self.config_data["curve"]["w_delta"], 10
         )
@@ -49,9 +52,12 @@ class MPCTuner(Node):
         self.s_speed = self.create_slider(
             "Speed", 0.1, 2.0, self.config_data["straight"]["speed"], 0.1
         )
+
+        # [수정] 직선 구간도 혹시 모르니 100,000으로 상향
         self.s_cte = self.create_slider(
-            "W_CTE", 1000, 50000, self.config_data["straight"]["w_cte"], 1000
+            "W_CTE", 1000, 100000, self.config_data["straight"]["w_cte"], 1000
         )
+
         self.s_dd = self.create_slider(
             "W_Delta_D", 0, 10000, self.config_data["straight"]["w_delta_d"], 100
         )
