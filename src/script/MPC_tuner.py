@@ -30,9 +30,9 @@ class MPCTuner(Node):
             "Speed", 0.1, 1.5, self.config_data["curve"]["speed"], 0.1
         )
 
-        # [수정] 최대값을 100,000 -> 300,000으로 변경 (20만 수용 가능하도록)
+        # [수정] 최소값 0, 간격(Step) 100으로 변경 (정밀 조정 가능)
         self.c_cte = self.create_slider(
-            "W_CTE", 1000, 300000, self.config_data["curve"]["w_cte"], 1000
+            "W_CTE", 0, 300000, self.config_data["curve"]["w_cte"], 100
         )
 
         self.c_delta = self.create_slider(
@@ -53,13 +53,13 @@ class MPCTuner(Node):
             "Speed", 0.1, 2.0, self.config_data["straight"]["speed"], 0.1
         )
 
-        # [수정] 직선 구간도 혹시 모르니 100,000으로 상향
+        # [수정] 최소값 0, 간격(Step) 100으로 변경
         self.s_cte = self.create_slider(
-            "W_CTE", 1000, 100000, self.config_data["straight"]["w_cte"], 1000
+            "W_CTE", 0, 100000, self.config_data["straight"]["w_cte"], 100
         )
 
         self.s_dd = self.create_slider(
-            "W_Delta_D", 0, 10000, self.config_data["straight"]["w_delta_d"], 100
+            "W_Delta_D", 0, 20000, self.config_data["straight"]["w_delta_d"], 100
         )
         self.s_look = self.create_slider(
             "Look Ahead", 30, 100, self.config_data["straight"]["look_ahead"], 1
@@ -68,7 +68,7 @@ class MPCTuner(Node):
         # Save Button
         tk.Button(
             self.root,
-            text="💾 SAVE CONFIG 💾",
+            text="SAVE CONFIG",
             command=self.save_config,
             bg="#4CAF50",
             fg="white",
