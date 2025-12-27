@@ -18,7 +18,7 @@ class MPCTuner(Node):
 
         self.root = tk.Tk()
         self.root.title("MPC Config Manager")
-        self.root.geometry("400x700")
+        self.root.geometry("450x700")  # 입력창 공간 확보를 위해 너비 약간 증가
 
         self.config_data = self.load_config()
 
@@ -30,9 +30,9 @@ class MPCTuner(Node):
             "Speed", 0.1, 1.5, self.config_data["curve"]["speed"], 0.1
         )
 
-        # [수정] 최소값 0, 간격(Step) 100으로 변경 (정밀 조정 가능)
+        # [수정] Step 10으로 변경 (14950 설정 가능)
         self.c_cte = self.create_slider(
-            "W_CTE", 0, 300000, self.config_data["curve"]["w_cte"], 100
+            "W_CTE", 0, 300000, self.config_data["curve"]["w_cte"], 10
         )
 
         self.c_delta = self.create_slider(
@@ -53,14 +53,16 @@ class MPCTuner(Node):
             "Speed", 0.1, 2.0, self.config_data["straight"]["speed"], 0.1
         )
 
-        # [수정] 최소값 0, 간격(Step) 100으로 변경
+        # [수정] Step 10으로 변경 (14950 설정 가능)
         self.s_cte = self.create_slider(
-            "W_CTE", 0, 100000, self.config_data["straight"]["w_cte"], 100
+            "W_CTE", 0, 100000, self.config_data["straight"]["w_cte"], 10
         )
 
+        # [수정] Step 10으로 변경 (9200 등 미세 조정 가능)
         self.s_dd = self.create_slider(
-            "W_Delta_D", 0, 20000, self.config_data["straight"]["w_delta_d"], 100
+            "W_Delta_D", 0, 20000, self.config_data["straight"]["w_delta_d"], 10
         )
+
         self.s_look = self.create_slider(
             "Look Ahead", 30, 100, self.config_data["straight"]["look_ahead"], 1
         )
@@ -68,7 +70,7 @@ class MPCTuner(Node):
         # Save Button
         tk.Button(
             self.root,
-            text="SAVE CONFIG",
+            text="💾 SAVE CONFIG 💾",
             command=self.save_config,
             bg="#4CAF50",
             fg="white",
@@ -125,8 +127,17 @@ class MPCTuner(Node):
     def create_slider(self, label, min_val, max_val, init_val, step):
         frame = tk.Frame(self.root)
         frame.pack(fill="x", padx=10, pady=2)
-        tk.Label(frame, text=label, width=15, anchor="w").pack(side="left")
+
+        # 라벨
+        tk.Label(frame, text=label, width=12, anchor="w").pack(side="left")
+
         var = tk.DoubleVar(value=init_val)
+
+        # [추가] 숫자 입력창 (Entry) - 변수와 연동됨
+        entry = tk.Entry(frame, textvariable=var, width=8)
+        entry.pack(side="right", padx=5)
+
+        # 슬라이더 (Scale) - showvalue=False로 설정하여 중복 숫자 표시 제거
         tk.Scale(
             frame,
             variable=var,
@@ -134,24 +145,31 @@ class MPCTuner(Node):
             to=max_val,
             resolution=step,
             orient="horizontal",
+            showvalue=False,
         ).pack(side="right", expand=True, fill="x")
+
         return var
 
     def tk_publish_loop(self):
-        data = {
-            "c_speed": self.c_speed.get(),
-            "c_cte": self.c_cte.get(),
-            "c_delta": self.c_delta.get(),
-            "c_dd": self.c_dd.get(),
-            "c_look": int(self.c_look.get()),
-            "s_speed": self.s_speed.get(),
-            "s_cte": self.s_cte.get(),
-            "s_dd": self.s_dd.get(),
-            "s_look": int(self.s_look.get()),
-        }
-        msg = String()
-        msg.data = json.dumps(data)
-        self.pub.publish(msg)
+        # Entry에 잘못된 값이 있을 경우(빈 값 등) 예외 처리
+        try:
+            data = {
+                "c_speed": self.c_speed.get(),
+                "c_cte": self.c_cte.get(),
+                "c_delta": self.c_delta.get(),
+                "c_dd": self.c_dd.get(),
+                "c_look": int(self.c_look.get()),
+                "s_speed": self.s_speed.get(),
+                "s_cte": self.s_cte.get(),
+                "s_dd": self.s_dd.get(),
+                "s_look": int(self.s_look.get()),
+            }
+            msg = String()
+            msg.data = json.dumps(data)
+            self.pub.publish(msg)
+        except Exception:
+            pass  # 입력 중일 때 에러 무시
+
         self.root.after(100, self.tk_publish_loop)
 
 
