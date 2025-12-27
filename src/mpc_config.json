@@ -8,8 +8,8 @@
     },
     "straight": {
         "speed": 0.8,
-        "w_cte": 14900.0,
-        "w_delta_d": 9200.0,
+        "w_cte": 10000.0,
+        "w_delta_d": 18000.0,
         "look_ahead": 45
     }
 }
