@@ -55,12 +55,12 @@ class MPCTuner(Node):
 
         # [수정] Step 10으로 변경 (14950 설정 가능)
         self.s_cte = self.create_slider(
-            "W_CTE", 0, 100000, self.config_data["straight"]["w_cte"], 10
+            "W_CTE", 10000, 100000, self.config_data["straight"]["w_cte"], 10
         )
 
         # [수정] Step 10으로 변경 (9200 등 미세 조정 가능)
         self.s_dd = self.create_slider(
-            "W_Delta_D", 0, 20000, self.config_data["straight"]["w_delta_d"], 10
+            "W_Delta_D", 10000, 25000, self.config_data["straight"]["w_delta_d"], 10
         )
 
         self.s_look = self.create_slider(
@@ -70,7 +70,7 @@ class MPCTuner(Node):
         # Save Button
         tk.Button(
             self.root,
-            text="💾 SAVE CONFIG 💾",
+            text="SAVE CONFIG",
             command=self.save_config,
             bg="#4CAF50",
             fg="white",
