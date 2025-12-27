@@ -7,8 +7,8 @@ import os
 class MPCSolver:
     def __init__(self):
         self.dt = 0.05
-        self.N = 12
-        self.Lf = 2.67
+        self.N = 10
+        self.Lf = 0.33
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.config_path = os.path.join(current_dir, "../mpc_config.json")
