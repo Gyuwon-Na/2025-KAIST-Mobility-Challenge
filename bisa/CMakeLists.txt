@@ -83,6 +83,7 @@ install(PROGRAMS
   scripts/dijkstra_planner.py
   scripts/mgeo_class_defs.py
   scripts/mpc_tuner_gui.py
+  scripts/obstacle_relay.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
