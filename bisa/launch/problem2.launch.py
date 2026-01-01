@@ -59,6 +59,12 @@ def generate_launch_description():
                 name="local_path_pub",
                 output="screen",
             ),
+            Node(
+                package="bisa",
+                executable="visualize_hvs",
+                name="visualize_hvs",
+                output="screen",
+            ),
             # 4. MPC Path Tracker
             Node(
                 package="bisa",
@@ -72,13 +78,6 @@ def generate_launch_description():
                 package="bisa",
                 executable="mpc_tuner_gui.py",
                 name="mpc_tuner_gui",
-                output="screen",
-            ),
-            # 5. Obstacle Relay
-            Node(
-                package="bisa",
-                executable="obstacle_relay.py",
-                name="obstacle_relay",
                 output="screen",
             ),
             # 6. RViz2

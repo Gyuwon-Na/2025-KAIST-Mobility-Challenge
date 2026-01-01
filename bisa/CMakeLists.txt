@@ -62,6 +62,9 @@ add_executable(mpc_path_tracker src/mpc_path_tracker.cpp)
 ament_target_dependencies(mpc_path_tracker ${dependencies})
 target_link_libraries(mpc_path_tracker mpc_controller_lib)
 
+add_executable(visualize_hvs src/visualize_hvs.cpp)
+ament_target_dependencies(visualize_hvs rclcpp geometry_msgs visualization_msgs)
+
 install(TARGETS
   mpc_controller_lib
   LIBRARY DESTINATION lib
@@ -70,6 +73,7 @@ install(TARGETS
 install(TARGETS
   local_path_pub
   mpc_path_tracker
+  visualize_hvs
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -83,7 +87,6 @@ install(PROGRAMS
   scripts/dijkstra_planner.py
   scripts/mgeo_class_defs.py
   scripts/mpc_tuner_gui.py
-  scripts/obstacle_relay.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
