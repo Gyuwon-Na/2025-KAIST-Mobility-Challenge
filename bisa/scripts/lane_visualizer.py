@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
 from nav_msgs.msg import Path
@@ -17,20 +18,20 @@ class LaneLoader(Node):
         home_dir = os.path.expanduser("~")
         self.file_path = os.path.join(home_dir, "KAIST/bisa/hdmap_data/lanes.json")
 
-        # 1. RViz 시각화용 (MarkerArray)
+        latched_qos = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        # 도로 시각화용
         self.marker_pub = self.create_publisher(MarkerArray, "/hdmap/lane_markers", 10)
 
-        # 2. Planner 제어용 (Path)
-        self.pub_one = self.create_publisher(Path, "/hdmap/lane_one", 10)
-        self.pub_two = self.create_publisher(Path, "/hdmap/lane_two", 10)
-        self.pub_three = self.create_publisher(Path, "/hdmap/lane_three", 10)
+        # Path Planner용
+        self.pub_one = self.create_publisher(Path, "/hdmap/lane_one", latched_qos)
+        self.pub_two = self.create_publisher(Path, "/hdmap/lane_two", latched_qos)
+        self.pub_three = self.create_publisher(Path, "/hdmap/lane_three", latched_qos)
 
         self.timer = self.create_timer(1.0, self.publish_lanes)
 
-        # 데이터 로드
         self.lane_data = self.load_json(self.file_path)
         self.get_logger().info(
-            f">>> Simple Lane Loader Started. File: {self.file_path} <<<"
+            f">>> QoS Fixed Lane Loader Started. Reading: {self.file_path} <<<"
         )
 
     def load_json(self, filename):
