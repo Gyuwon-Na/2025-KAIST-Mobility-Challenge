@@ -65,6 +65,12 @@ def generate_launch_description():
                 name="visualize_hvs",
                 output="screen",
             ),
+            Node(
+                package="bisa",
+                executable="lane_visualizer.py",
+                name="lane_visualizer",
+                output="screen",
+            ),
             # 4. MPC Path Tracker
             Node(
                 package="bisa",
