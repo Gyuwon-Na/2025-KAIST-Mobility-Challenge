@@ -10,7 +10,7 @@ def generate_launch_description():
     pkg_dir = get_package_share_directory("bisa")
 
     # 파일 경로 설정
-    rviz_config = os.path.join(pkg_dir, "rviz", "bisa.rviz")
+    rviz_config = os.path.join(pkg_dir, "rviz", "problem2.rviz")
     mpc_config = os.path.join(pkg_dir, "config", "mpc_params.yaml")
     path_config = os.path.join(pkg_dir, "config", "path.yaml")
     bridge_config_path = os.path.join(pkg_dir, "config", "bridge_config.yaml")
@@ -27,14 +27,14 @@ def generate_launch_description():
     return LaunchDescription(
         [
             problem_arg,  # Argument 등록
-            # 1. HD Map Visualizer
             Node(
                 package="domain_bridge",
                 executable="domain_bridge",
                 name="domain_bridge",
                 output="screen",
-                arguments=[bridge_config_path],  # 아까 만든 yaml 파일 로드
+                arguments=[bridge_config_path],
             ),
+            # 1. HD Map Visualizer
             Node(
                 package="bisa",
                 executable="hdmap_visualizer.py",
@@ -52,13 +52,13 @@ def generate_launch_description():
                     {"target_problem": LaunchConfiguration("problem")},
                 ],
             ),
-            # 3. Local Path Publisher
             Node(
                 package="bisa",
-                executable="local_path_pub",
-                name="local_path_pub",
+                executable="frenet_planner",
+                name="frenet_planner",
                 output="screen",
             ),
+            # 3. Local Path Publisher
             Node(
                 package="bisa",
                 executable="visualize_hvs",
