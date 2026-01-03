@@ -1,22 +1,48 @@
 mpc_path_tracker:
   ros__parameters:
-    # --- 가중치 설정 (Weights) ---
-    Q_pos: 20.0        # 경로 오차 가중치
-    Q_heading: 28.0    # 헤딩 오차 가중치
-    R_v: 0.3           # 속도 변화율 가중치
-    R_w: 0.3           # 조향 변화율 가중치
-
-    # --- 차량 제약 조건 (Constraints) ---
+    # --- 가중치 설정 ---
+    Q_pos: 20.0
+    Q_heading: 28.0
+    R_v: 0.3
+    R_w: 0.3
+    # --- 제약 조건 ---
     max_velocity: 3.0
     max_accel: 2.0
     max_angular_vel: 2.0
-
-    # --- 차량 물리 정보 (Vehicle Specs) ---
+    # --- 차량 정보 ---
     wheelbase: 0.33
     vehicle_width: 0.15
-    
-    # --- MPC 제어 설정 ---
-    horizon: 50         # 예측 구간
-    dt: 0.02            # 제어 주기 (50Hz)
+    # --- MPC 설정 ---
+    horizon: 50
+    dt: 0.02
     lookahead_base: 0.3
     lookahead_per_speed: 0.2
+
+# [새로 추가된 부분] Frenet Planner 파라미터
+frenet_planner:
+  ros__parameters:
+    # --- 차량 물리 정보 ---
+    wheelbase: 0.33
+    max_steer: 0.52
+    
+    # --- 속도 설정 (Aggressive Mode 반영) ---
+    target_speed: 1.0
+    boost_speed: 1.5
+    
+    # --- Lookahead ---
+    base_lookahead: 0.6
+    max_lookahead: 1.2
+    error_gain: 0.2
+    
+    # --- 제어 가중치 ---
+    weight_heading: 0.7
+    weight_path: 0.3
+    steer_alpha: 0.1
+    
+    # --- 안전 마진 (Aggressive Mode 반영) ---
+    static_margin_front: 0.4
+    static_margin_rear: 0.2
+    
+    # --- 예측 로직 (Time & Step) ---
+    predict_time: 1.0  # 과감한 진입을 위해 짧게 설정됨
+    predict_step: 0.2

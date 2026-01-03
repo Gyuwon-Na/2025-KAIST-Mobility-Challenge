@@ -11,7 +11,7 @@ def generate_launch_description():
 
     # 파일 경로 설정
     rviz_config = os.path.join(pkg_dir, "rviz", "problem2.rviz")
-    mpc_config = os.path.join(pkg_dir, "config", "mpc_params.yaml")
+    param_config = os.path.join(pkg_dir, "config", "mpc_params.yaml")
     path_config = os.path.join(pkg_dir, "config", "path.yaml")
     bridge_config_path = os.path.join(pkg_dir, "config", "bridge_config.yaml")
 
@@ -57,6 +57,7 @@ def generate_launch_description():
                 executable="frenet_planner",
                 name="frenet_planner",
                 output="screen",
+                parameters=[param_config],
             ),
             # 3. Local Path Publisher
             Node(
@@ -77,7 +78,7 @@ def generate_launch_description():
                 executable="mpc_path_tracker",
                 name="mpc_path_tracker",
                 output="screen",
-                parameters=[mpc_config],
+                parameters=[param_config],
             ),
             # 5. MPC Tuner GUI
             Node(
