@@ -8,6 +8,9 @@ from rclpy.node import Node
 from rcl_interfaces.msg import Parameter, ParameterType
 from rcl_interfaces.srv import SetParameters
 import threading
+import yaml
+import os
+from ament_index_python.packages import get_package_share_directory
 
 
 class TunerNode(Node):
@@ -20,6 +23,9 @@ class TunerNode(Node):
         )
 
         # 클라이언트 2: Frenet Planner
+        # [주의] YAML 파일의 노드 이름은 frenet_planner지만,
+        # launch 파일이나 cpp 노드 초기화 시 이름이 다를 수 있으므로 확인 필요.
+        # 일단 frenet_planner.cpp에서는 "frenet_planner"로 초기화됨.
         self.cli_frenet = self.create_client(
             SetParameters, "/frenet_planner/set_parameters"
         )
@@ -74,6 +80,11 @@ class App:
         self.root.title("BISA Integrated Tuner & Control")
         self.root.geometry("600x800")
 
+        # [핵심] YAML 파일 로드
+        self.mpc_params = {}
+        self.frenet_params = {}
+        self.load_yaml_params()
+
         # 탭 생성 (Notebook)
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
@@ -87,6 +98,47 @@ class App:
         self.frame_frenet = ttk.Frame(self.notebook)
         self.notebook.add(self.frame_frenet, text="Frenet Planner")
         self.setup_frenet_tab()
+
+    def load_yaml_params(self):
+        """패키지 내의 config/mpc_params.yaml 파일을 읽어옵니다."""
+        try:
+            package_name = "bisa"  # 패키지 이름
+            share_dir = get_package_share_directory(package_name)
+            yaml_path = os.path.join(share_dir, "config", "mpc_params.yaml")
+
+            print(f">>> Loading YAML from: {yaml_path}")
+
+            if os.path.exists(yaml_path):
+                with open(yaml_path, "r") as f:
+                    data = yaml.safe_load(f)
+
+                    # MPC 파라미터 파싱
+                    if "mpc_path_tracker" in data:
+                        self.mpc_params = data["mpc_path_tracker"].get(
+                            "ros__parameters", {}
+                        )
+
+                    # Frenet 파라미터 파싱
+                    if "frenet_planner" in data:
+                        self.frenet_params = data["frenet_planner"].get(
+                            "ros__parameters", {}
+                        )
+            else:
+                print(f"!!! Warning: YAML file not found at {yaml_path}")
+
+        except Exception as e:
+            print(f"!!! Error loading YAML: {e}")
+
+    def apply_yaml_init(self, configs, yaml_data):
+        """GUI 설정 리스트의 init 값을 YAML 데이터로 덮어씌웁니다."""
+        for cfg in configs:
+            param_name = cfg["name"]
+            if param_name in yaml_data:
+                # YAML에서 값 가져오기
+                yaml_val = yaml_data[param_name]
+                print(f"   - Overriding {param_name}: {cfg['init']} -> {yaml_val}")
+                cfg["init"] = yaml_val
+        return configs
 
     def setup_mpc_tab(self):
         mpc_configs = [
@@ -179,6 +231,8 @@ class App:
                 "type": float,
             },
         ]
+        # YAML 값 적용
+        mpc_configs = self.apply_yaml_init(mpc_configs, self.mpc_params)
         self.create_controls(self.frame_mpc, mpc_configs, "mpc")
 
     def setup_frenet_tab(self):
@@ -295,6 +349,8 @@ class App:
                 "type": float,
             },
         ]
+        # YAML 값 적용
+        frenet_configs = self.apply_yaml_init(frenet_configs, self.frenet_params)
         self.create_controls(self.frame_frenet, frenet_configs, "frenet")
 
     def trigger_reset(self):
