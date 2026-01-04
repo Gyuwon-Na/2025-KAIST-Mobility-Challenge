@@ -315,7 +315,7 @@ private:
         double lane_x = path->poses[idx].pose.position.x;
         double lane_y = path->poses[idx].pose.position.y;
 
-        for (const auto &[id, obs] : tracked_obstacles_)
+        for (auto &[id, obs] : tracked_obstacles_)
         {
             if (std::hypot(obs.x - lane_x, obs.y - lane_y) < 0.7)
             {
@@ -324,6 +324,13 @@ private:
                 Point p = transform_to_body(obs.x, obs.y);
                 if (std::abs(p.x) < 0.6)
                     r = 1.0;
+
+                // 현재 타겟 차선인 경우에만 장애물 객체에 점수 기록 (시각화용)
+                if (lane == current_target_lane_)
+                {
+                    obs.risk_score = r;
+                }
+
                 if (r > max_risk)
                     max_risk = r;
             }
@@ -604,8 +611,10 @@ private:
         visualization_msgs::msg::MarkerArray markers;
         for (auto &[id, obs] : tracked_obstacles_)
         {
+            // 오래된 장애물은 표시하지 않음
             if ((this->now() - obs.last_seen).seconds() > 1.0)
                 continue;
+
             visualization_msgs::msg::Marker text;
             text.header.frame_id = "world";
             text.header.stamp = this->now();
@@ -615,15 +624,28 @@ private:
             text.action = visualization_msgs::msg::Marker::ADD;
             text.pose.position.x = obs.x;
             text.pose.position.y = obs.y;
-            text.pose.position.z = 0.6;
-            text.scale.z = 0.3;
+            text.pose.position.z = 1.5; // 차 위로 잘 보이게 띄움
+            text.scale.z = 0.5;
+
             text.color.a = 1.0;
-            text.color.r = 1.0;
-            text.color.g = 1.0;
-            text.color.b = 1.0;
+            // 리스크가 높으면 빨간색, 낮으면 초록색
+            if (obs.risk_score > 0.5)
+            {
+                text.color.r = 1.0;
+                text.color.g = 0.0;
+            }
+            else
+            {
+                text.color.r = 0.0;
+                text.color.g = 1.0;
+            }
+            text.color.b = 0.0;
+
+            // [수정] ID 제거하고 Risk Score만 소수점 2자리로 표시
             std::stringstream ss;
-            ss << "ID:" << id;
+            ss << std::fixed << std::setprecision(2) << obs.risk_score;
             text.text = ss.str();
+
             markers.markers.push_back(text);
         }
         risk_text_pub_->publish(markers);
