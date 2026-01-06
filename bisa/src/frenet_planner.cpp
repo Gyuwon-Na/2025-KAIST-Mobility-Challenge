@@ -1,3 +1,14 @@
+/**
+ * @file frenet_planner.cpp
+ * @brief Advanced Lane Change Planner for RC-Scale Autonomous Vehicle (v2.2)
+ *
+ * Fixes:
+ * - Time source mismatch error (critical bug fix)
+ * - Yaw angle extraction (orientation.z is Euler yaw)
+ * - Separate front/rear safety zone visualization
+ * - More aggressive lane change triggering
+ */
+
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/qos.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -6,7 +17,8 @@
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
-#include <tf2/utils.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <cmath>
 #include <vector>
 #include <algorithm>
@@ -17,120 +29,188 @@
 
 using namespace std::chrono_literals;
 
-enum LaneID
+// ============================================================================
+// ENUMS AND STRUCTS
+// ============================================================================
+
+enum class LaneID
 {
-    LANE_1 = 0,
-    LANE_2 = 1,
-    LANE_3 = 2,
+    LANE_1 = 0, // Innermost - Static HVs
+    LANE_2 = 1, // Middle - Slow Dynamic HVs (CAV starts here)
+    LANE_3 = 2, // Outermost - Fast Dynamic HVs
     NONE = -1
 };
 
-struct ObstacleState
+enum class DrivingState
 {
-    int id;
-    double x, y, vx, vy;
-    double risk_score;
-    rclcpp::Time last_seen;
+    CRUISE,          // Normal driving
+    PREPARE_CHANGE,  // Preparing lane change
+    LANE_CHANGING,   // Executing lane change
+    EMERGENCY_ACCEL, // Rear threat - speed up
+    EMERGENCY_BRAKE  // Front collision - brake
 };
 
-struct Point
+struct ObstacleInfo
 {
-    double x, y;
+    int id;
+    double x, y;          // Global position
+    double vx, vy;        // Global velocity
+    double speed;         // Absolute speed
+    LaneID lane;          // Which lane
+    double rel_x, rel_y;  // Body frame position
+    double rel_vx;        // Relative velocity (body frame)
+    double last_seen_sec; // Use double instead of rclcpp::Time to avoid time source issues
 };
+
+// ============================================================================
+// MAIN CLASS
+// ============================================================================
 
 class FrenetPlanner : public rclcpp::Node
 {
 public:
     FrenetPlanner() : Node("frenet_planner")
     {
-        // 1. 파라미터 선언
-        this->declare_parameter("wheelbase", 0.33);
-        this->declare_parameter("max_steer", 0.52);
-        this->declare_parameter("target_speed", 1.0);
-        this->declare_parameter("boost_speed", 1.5);
-        this->declare_parameter("base_lookahead", 0.6);
-        this->declare_parameter("max_lookahead", 1.2);
-        this->declare_parameter("error_gain", 0.2);
-        this->declare_parameter("weight_heading", 0.7);
-        this->declare_parameter("weight_path", 0.3);
-        this->declare_parameter("steer_alpha", 0.1);
-        this->declare_parameter("static_margin_front", 0.7);
-        this->declare_parameter("static_margin_rear", 0.3);
-        this->declare_parameter("predict_time", 1.0);
-        this->declare_parameter("predict_step", 0.2);
+        RCLCPP_INFO(this->get_logger(), "============================================");
+        RCLCPP_INFO(this->get_logger(), "Frenet Planner v2.2 - Time Bug Fixed");
+        RCLCPP_INFO(this->get_logger(), "============================================");
 
-        // 리셋 트리거
-        this->declare_parameter("reset_trigger", false);
-
-        get_current_parameters();
+        declare_parameters();
+        load_parameters();
 
         param_callback_handle_ = this->add_on_set_parameters_callback(
             std::bind(&FrenetPlanner::param_callback, this, std::placeholders::_1));
 
-        auto map_qos = rclcpp::QoS(10).transient_local();
-        // [사용자 수정 반영 확인됨] Lane 1 -> path_lane_1_
-        sub_lane_1_ = this->create_subscription<nav_msgs::msg::Path>("/hdmap/lane_one", map_qos, [this](const nav_msgs::msg::Path::SharedPtr msg)
-                                                                     { path_lane_1_ = msg; });
-        sub_lane_2_ = this->create_subscription<nav_msgs::msg::Path>("/hdmap/lane_two", map_qos, [this](const nav_msgs::msg::Path::SharedPtr msg)
-                                                                     { path_lane_2_ = msg; });
-        sub_lane_3_ = this->create_subscription<nav_msgs::msg::Path>("/hdmap/lane_three", map_qos, [this](const nav_msgs::msg::Path::SharedPtr msg)
-                                                                     { path_lane_3_ = msg; });
-
-        pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-            "/Ego_pose", rclcpp::SensorDataQoS(), std::bind(&FrenetPlanner::pose_callback, this, std::placeholders::_1));
-
-        obs_sub_ = this->create_subscription<visualization_msgs::msg::MarkerArray>(
-            "/obstacles_markers", 10, std::bind(&FrenetPlanner::obs_callback, this, std::placeholders::_1));
-
-        accel_pub_ = this->create_publisher<geometry_msgs::msg::Accel>("/Accel", 10);
-        local_path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planning/target_path_viz", 10);
-        debug_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/planning/lookahead_point", 10);
-        risk_text_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/planning/risk_scores", 10);
-
-        timer_ = this->create_wall_timer(20ms, std::bind(&FrenetPlanner::control_loop, this));
-
-        // 망설임 방지용 상태 변수 초기화
-        is_waiting_for_gap_ = false;
-
+        setup_ros_interfaces();
         reset_state();
 
-        RCLCPP_INFO(this->get_logger(), ">>> Smart Lane Changer Started (No Reverse Mode) <<<");
+        // 50Hz control loop
+        timer_ = this->create_wall_timer(20ms, std::bind(&FrenetPlanner::control_loop, this));
+
+        RCLCPP_INFO(this->get_logger(), "Planner initialized. Waiting for data...");
     }
 
 private:
-    double wheelbase_;
-    double max_steer_;
-    double target_speed_;
-    double boost_speed_;
-    double base_lookahead_;
-    double max_lookahead_;
-    double error_gain_;
-    double weight_heading_;
-    double weight_path_;
-    double steer_alpha_;
-    double static_margin_front_;
-    double static_margin_rear_;
-    double predict_time_;
-    double predict_step_;
+    // ========================================================================
+    // CONSTANTS (RC Car Scale)
+    // ========================================================================
 
-    // [추가] 망설임 방지용 변수
-    bool is_waiting_for_gap_;
+    static constexpr double VEHICLE_LENGTH = 0.33;
+    static constexpr double VEHICLE_WIDTH = 0.15;
+    static constexpr double VEHICLE_LENGTH_F = 0.17;
+    static constexpr double VEHICLE_LENGTH_R = 0.16;
+
+    // Lane detection
+    static constexpr double LANE_WIDTH = 0.25;
+    static constexpr double LANE_THRESHOLD = 0.20;
+
+    // Safety distances
+    static constexpr double FRONT_SAFE_DIST = 0.6;
+    static constexpr double FRONT_CRITICAL_DIST = 0.35;
+    static constexpr double FRONT_EMERGENCY_DIST = 0.25;
+    static constexpr double REAR_DANGER_DIST = 0.4;
+    static constexpr double BLIND_SPOT_LENGTH = 0.4;
+    static constexpr double SIDE_MARGIN = 0.3;
+
+    // ========================================================================
+    // PARAMETERS
+    // ========================================================================
+
+    double wheelbase_ = 0.33;
+    double max_steer_ = 0.52;
+    double target_speed_ = 0.8;
+    double boost_speed_ = 1.0;
+    double base_lookahead_ = 0.4;
+    double max_lookahead_ = 0.8;
+    double weight_heading_ = 0.6;
+    double weight_path_ = 0.4;
+    double steer_alpha_ = 0.2;
+
+    // ========================================================================
+    // STATE VARIABLES
+    // ========================================================================
+
+    DrivingState current_state_ = DrivingState::CRUISE;
+    LaneID current_lane_ = LaneID::LANE_2;
+    LaneID target_lane_ = LaneID::LANE_2;
+
+    // Lane change
+    bool lane_change_committed_ = false;
+    double lane_change_start_sec_ = 0.0;
+    int safe_check_count_ = 0;
+    static constexpr int SAFE_CHECK_REQUIRED = 3;
+
+    // Pose
+    double ego_x_ = 0.0, ego_y_ = 0.0, ego_yaw_ = 0.0;
+    double ego_speed_ = 0.0;
+    bool pose_received_ = false;
+
+    // Velocity estimation
+    double prev_x_ = 0.0, prev_y_ = 0.0;
+    double prev_pose_sec_ = 0.0;
+    bool prev_pose_valid_ = false;
+
+    // Path following
+    int last_closest_idx_ = 0;
+    double last_steer_ = 0.0;
+
+    // Obstacles
+    std::map<int, ObstacleInfo> obstacles_;
+
+    // Logging (use double for time to avoid time source issues)
+    double last_log_sec_ = 0.0;
+    double last_detail_log_sec_ = 0.0;
+
+    // ========================================================================
+    // ROS INTERFACES
+    // ========================================================================
 
     rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 
-    void reset_state()
+    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub_lane_1_;
+    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub_lane_2_;
+    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub_lane_3_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
+    rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr obs_sub_;
+
+    rclcpp::Publisher<geometry_msgs::msg::Accel>::SharedPtr accel_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr lookahead_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr debug_pub_;
+
+    rclcpp::TimerBase::SharedPtr timer_;
+
+    nav_msgs::msg::Path::SharedPtr path_lane_1_;
+    nav_msgs::msg::Path::SharedPtr path_lane_2_;
+    nav_msgs::msg::Path::SharedPtr path_lane_3_;
+
+    // ========================================================================
+    // HELPER: Get current time as double (seconds)
+    // ========================================================================
+
+    double now_sec()
     {
-        current_target_lane_ = LANE_2;
-        last_closest_idx_ = -1;
-        current_speed_ = 0.0;
-        last_steer_cmd_ = 0.0;
-        is_changing_lane_ = false;
-        tracked_obstacles_.clear();
-        is_waiting_for_gap_ = false; // 리셋 시 대기 상태 해제
-        RCLCPP_WARN(this->get_logger(), "!!! STATE RESET (Cool Start) !!!");
+        return this->now().seconds();
     }
 
-    void get_current_parameters()
+    // ========================================================================
+    // INITIALIZATION
+    // ========================================================================
+
+    void declare_parameters()
+    {
+        this->declare_parameter("wheelbase", 0.33);
+        this->declare_parameter("max_steer", 0.52);
+        this->declare_parameter("target_speed", 0.8);
+        this->declare_parameter("boost_speed", 1.0);
+        this->declare_parameter("base_lookahead", 0.4);
+        this->declare_parameter("max_lookahead", 0.8);
+        this->declare_parameter("weight_heading", 0.6);
+        this->declare_parameter("weight_path", 0.4);
+        this->declare_parameter("steer_alpha", 0.2);
+        this->declare_parameter("reset_trigger", false);
+    }
+
+    void load_parameters()
     {
         this->get_parameter("wheelbase", wheelbase_);
         this->get_parameter("max_steer", max_steer_);
@@ -138,538 +218,1005 @@ private:
         this->get_parameter("boost_speed", boost_speed_);
         this->get_parameter("base_lookahead", base_lookahead_);
         this->get_parameter("max_lookahead", max_lookahead_);
-        this->get_parameter("error_gain", error_gain_);
         this->get_parameter("weight_heading", weight_heading_);
         this->get_parameter("weight_path", weight_path_);
         this->get_parameter("steer_alpha", steer_alpha_);
-        this->get_parameter("static_margin_front", static_margin_front_);
-        this->get_parameter("static_margin_rear", static_margin_rear_);
-        this->get_parameter("predict_time", predict_time_);
-        this->get_parameter("predict_step", predict_step_);
     }
 
-    rcl_interfaces::msg::SetParametersResult param_callback(const std::vector<rclcpp::Parameter> &parameters)
+    rcl_interfaces::msg::SetParametersResult param_callback(
+        const std::vector<rclcpp::Parameter> &params)
     {
-        rcl_interfaces::msg::SetParametersResult result;
-        result.successful = true;
-        result.reason = "success";
-
-        bool need_update = false;
-        for (const auto &param : parameters)
+        for (const auto &p : params)
         {
-            if (param.get_name() == "reset_trigger" && param.as_bool() == true)
+            if (p.get_name() == "reset_trigger" && p.as_bool())
             {
                 reset_state();
             }
-            else
-            {
-                need_update = true;
-            }
         }
-
-        if (need_update)
-        {
-            get_current_parameters();
-        }
+        load_parameters();
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
         return result;
     }
 
+    void setup_ros_interfaces()
+    {
+        auto map_qos = rclcpp::QoS(10).transient_local();
+
+        sub_lane_1_ = this->create_subscription<nav_msgs::msg::Path>(
+            "/hdmap/lane_one", map_qos,
+            [this](nav_msgs::msg::Path::SharedPtr msg)
+            {
+                path_lane_1_ = msg;
+                RCLCPP_INFO_ONCE(this->get_logger(), "Lane 1 received: %zu points", msg->poses.size());
+            });
+        sub_lane_2_ = this->create_subscription<nav_msgs::msg::Path>(
+            "/hdmap/lane_two", map_qos,
+            [this](nav_msgs::msg::Path::SharedPtr msg)
+            {
+                path_lane_2_ = msg;
+                RCLCPP_INFO_ONCE(this->get_logger(), "Lane 2 received: %zu points", msg->poses.size());
+            });
+        sub_lane_3_ = this->create_subscription<nav_msgs::msg::Path>(
+            "/hdmap/lane_three", map_qos,
+            [this](nav_msgs::msg::Path::SharedPtr msg)
+            {
+                path_lane_3_ = msg;
+                RCLCPP_INFO_ONCE(this->get_logger(), "Lane 3 received: %zu points", msg->poses.size());
+            });
+
+        pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/Ego_pose", rclcpp::SensorDataQoS(),
+            std::bind(&FrenetPlanner::pose_callback, this, std::placeholders::_1));
+
+        obs_sub_ = this->create_subscription<visualization_msgs::msg::MarkerArray>(
+            "/obstacles_markers", 10,
+            std::bind(&FrenetPlanner::obstacle_callback, this, std::placeholders::_1));
+
+        accel_pub_ = this->create_publisher<geometry_msgs::msg::Accel>("/Accel", 10);
+        lookahead_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/planning/lookahead_point", 10);
+        debug_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/planning/debug_markers", 10);
+    }
+
+    void reset_state()
+    {
+        current_state_ = DrivingState::CRUISE;
+        current_lane_ = LaneID::LANE_2;
+        target_lane_ = LaneID::LANE_2;
+        lane_change_committed_ = false;
+        lane_change_start_sec_ = 0.0;
+        safe_check_count_ = 0;
+        ego_speed_ = 0.0;
+        last_closest_idx_ = 0;
+        last_steer_ = 0.0;
+        prev_pose_valid_ = false;
+        obstacles_.clear();
+        RCLCPP_WARN(this->get_logger(), "=== STATE RESET ===");
+    }
+
+    // ========================================================================
+    // POSE CALLBACK
+    // ========================================================================
+
     void pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
     {
-        current_pose_ = msg->pose;
-        static rclcpp::Time last_time = this->now();
-        static double last_x = current_pose_.position.x;
-        static double last_y = current_pose_.position.y;
-        rclcpp::Time now = this->now();
-        double dt = (now - last_time).seconds();
-        if (dt > 0.02)
+        ego_x_ = msg->pose.position.x;
+        ego_y_ = msg->pose.position.y;
+
+        // CRITICAL: orientation.z contains Euler yaw directly!
+        ego_yaw_ = msg->pose.orientation.z;
+
+        pose_received_ = true;
+
+        // Estimate velocity using double for time
+        double current_sec = now_sec();
+        if (prev_pose_valid_)
         {
-            double dist = std::hypot(current_pose_.position.x - last_x, current_pose_.position.y - last_y);
-            double raw_speed = dist / dt;
+            double dt = current_sec - prev_pose_sec_;
+            if (dt > 0.01 && dt < 0.5)
+            {
+                double dx = ego_x_ - prev_x_;
+                double dy = ego_y_ - prev_y_;
+                double dist = std::hypot(dx, dy);
+                double raw_speed = dist / dt;
 
-            // 후진 중일 경우 속도를 음수로 표현 (간단한 방향 체크)
-            // (실제로는 쿼터니언 방향과 이동 벡터 내적을 해야 정확하지만, 여기서는 raw_speed 스칼라만 사용 중)
-            // 여기서는 raw_speed가 항상 양수이므로, 뒤로 밀리는 건 control_loop에서 처리
+                // Direction check
+                double move_angle = std::atan2(dy, dx);
+                double angle_diff = move_angle - ego_yaw_;
+                while (angle_diff > M_PI)
+                    angle_diff -= 2 * M_PI;
+                while (angle_diff < -M_PI)
+                    angle_diff += 2 * M_PI;
 
-            current_speed_ = (current_speed_ * 0.7) + (raw_speed * 0.3);
-            last_time = now;
-            last_x = current_pose_.position.x;
-            last_y = current_pose_.position.y;
+                if (std::abs(angle_diff) > M_PI / 2)
+                    raw_speed = -raw_speed;
+
+                ego_speed_ = ego_speed_ * 0.7 + raw_speed * 0.3;
+            }
         }
+
+        prev_x_ = ego_x_;
+        prev_y_ = ego_y_;
+        prev_pose_sec_ = current_sec;
+        prev_pose_valid_ = true;
+
+        // Update current lane
+        current_lane_ = get_lane_at_position(ego_x_, ego_y_);
     }
 
-    void obs_callback(const visualization_msgs::msg::MarkerArray::SharedPtr msg)
+    // ========================================================================
+    // OBSTACLE CALLBACK
+    // ========================================================================
+
+    void obstacle_callback(const visualization_msgs::msg::MarkerArray::SharedPtr msg)
     {
-        rclcpp::Time now = this->now();
+        double current_sec = now_sec();
+
         for (const auto &marker : msg->markers)
         {
-            if (marker.ns == "surrounding_cars" && marker.type == visualization_msgs::msg::Marker::CUBE)
+            if (marker.ns != "surrounding_cars")
+                continue;
+            if (marker.type != visualization_msgs::msg::Marker::CUBE)
+                continue;
+
+            int id = marker.id;
+            double ox = marker.pose.position.x;
+            double oy = marker.pose.position.y;
+
+            auto it = obstacles_.find(id);
+            if (it != obstacles_.end())
             {
-                int id = marker.id;
-                if (tracked_obstacles_.find(id) != tracked_obstacles_.end())
+                auto &obs = it->second;
+                double dt = current_sec - obs.last_seen_sec;
+
+                if (dt > 0.01 && dt < 1.0)
                 {
-                    double dt = (now - tracked_obstacles_[id].last_seen).seconds();
-                    if (dt > 0.001)
+                    double vx = (ox - obs.x) / dt;
+                    double vy = (oy - obs.y) / dt;
+
+                    if (std::hypot(vx, vy) < 5.0)
                     {
-                        double vx = (marker.pose.position.x - tracked_obstacles_[id].x) / dt;
-                        double vy = (marker.pose.position.y - tracked_obstacles_[id].y) / dt;
-                        if (std::abs(vx) < 5.0 && std::abs(vy) < 5.0)
-                        {
-                            tracked_obstacles_[id].vx = tracked_obstacles_[id].vx * 0.6 + vx * 0.4;
-                            tracked_obstacles_[id].vy = tracked_obstacles_[id].vy * 0.6 + vy * 0.4;
-                        }
+                        obs.vx = obs.vx * 0.5 + vx * 0.5;
+                        obs.vy = obs.vy * 0.5 + vy * 0.5;
                     }
-                    tracked_obstacles_[id].x = marker.pose.position.x;
-                    tracked_obstacles_[id].y = marker.pose.position.y;
-                    tracked_obstacles_[id].last_seen = now;
                 }
-                else
-                {
-                    tracked_obstacles_[id] = {id, marker.pose.position.x, marker.pose.position.y, 0.0, 0.0, 0.0, now};
-                }
+
+                obs.x = ox;
+                obs.y = oy;
+                obs.speed = std::hypot(obs.vx, obs.vy);
+                obs.lane = get_lane_at_position(ox, oy);
+                obs.last_seen_sec = current_sec;
             }
-        }
-    }
-
-    Point transform_to_body(double gx, double gy)
-    {
-        double dx = gx - current_pose_.position.x;
-        double dy = gy - current_pose_.position.y;
-        double yaw = tf2::getYaw(current_pose_.orientation);
-        return {dx * cos(yaw) + dy * sin(yaw), -dx * sin(yaw) + dy * cos(yaw)};
-    }
-
-    int get_closest_idx(const nav_msgs::msg::Path::SharedPtr &path, int last_idx)
-    {
-        if (!path || path->poses.empty())
-            return 0;
-        int sz = path->poses.size();
-        int best_idx = 0;
-        if (last_idx != -1)
-            best_idx = last_idx;
-
-        double min_d = 1e9;
-        int search_start = (last_idx == -1) ? 0 : -10;
-        int search_end = (last_idx == -1) ? sz : 50;
-
-        for (int i = search_start; i < search_end; ++i)
-        {
-            int idx = (best_idx + i + sz) % sz;
-            double d = std::hypot(path->poses[idx].pose.position.x - current_pose_.position.x,
-                                  path->poses[idx].pose.position.y - current_pose_.position.y);
-            if (d < min_d)
+            else
             {
-                min_d = d;
-                best_idx = idx;
+                ObstacleInfo obs;
+                obs.id = id;
+                obs.x = ox;
+                obs.y = oy;
+                obs.vx = 0.0;
+                obs.vy = 0.0;
+                obs.speed = 0.0;
+                obs.lane = get_lane_at_position(ox, oy);
+                obs.last_seen_sec = current_sec;
+                obstacles_[id] = obs;
             }
         }
-        return best_idx;
+
+        // Remove stale obstacles
+        double now = current_sec;
+        for (auto it = obstacles_.begin(); it != obstacles_.end();)
+        {
+            if ((now - it->second.last_seen_sec) > 1.0)
+                it = obstacles_.erase(it);
+            else
+                ++it;
+        }
     }
 
-    double get_dist_to_path_simple(const nav_msgs::msg::Path::SharedPtr &path, double x, double y)
+    // ========================================================================
+    // LANE DETECTION
+    // ========================================================================
+
+    double get_dist_to_lane(const nav_msgs::msg::Path::SharedPtr &path, double x, double y)
     {
         if (!path || path->poses.empty())
             return 999.0;
+
         double min_d = 999.0;
-        for (size_t i = 0; i < path->poses.size(); i += 5)
+        for (size_t i = 0; i < path->poses.size(); i += 10)
         {
-            double d = std::hypot(path->poses[i].pose.position.x - x, path->poses[i].pose.position.y - y);
+            double d = std::hypot(path->poses[i].pose.position.x - x,
+                                  path->poses[i].pose.position.y - y);
             if (d < min_d)
                 min_d = d;
         }
         return min_d;
     }
 
-    LaneID get_lane_id_of_point(double x, double y)
+    LaneID get_lane_at_position(double x, double y)
     {
-        double d1 = get_dist_to_path_simple(path_lane_1_, x, y);
-        double d2 = get_dist_to_path_simple(path_lane_2_, x, y);
-        double d3 = get_dist_to_path_simple(path_lane_3_, x, y);
-        if (d1 < d2 && d1 < d3 && d1 < 0.45)
-            return LANE_1;
-        if (d2 < d3 && d2 < 0.45)
-            return LANE_2;
-        if (d3 < 0.45)
-            return LANE_3;
-        return NONE;
+        double d1 = get_dist_to_lane(path_lane_1_, x, y);
+        double d2 = get_dist_to_lane(path_lane_2_, x, y);
+        double d3 = get_dist_to_lane(path_lane_3_, x, y);
+
+        double min_d = std::min({d1, d2, d3});
+
+        if (min_d > LANE_THRESHOLD)
+            return LaneID::NONE;
+
+        if (d1 == min_d)
+            return LaneID::LANE_1;
+        if (d2 == min_d)
+            return LaneID::LANE_2;
+        return LaneID::LANE_3;
     }
 
-    nav_msgs::msg::Path::SharedPtr get_path_by_id(LaneID id)
+    nav_msgs::msg::Path::SharedPtr get_lane_path(LaneID lane)
     {
-        if (id == LANE_1)
+        switch (lane)
+        {
+        case LaneID::LANE_1:
             return path_lane_1_;
-        if (id == LANE_2)
+        case LaneID::LANE_2:
             return path_lane_2_;
-        if (id == LANE_3)
+        case LaneID::LANE_3:
             return path_lane_3_;
-        return nullptr;
+        default:
+            return path_lane_2_;
+        }
     }
 
-    double get_lane_max_risk(LaneID lane)
+    std::string lane_to_string(LaneID lane)
     {
-        nav_msgs::msg::Path::SharedPtr path = get_path_by_id(lane);
-        if (!path || path->poses.empty())
-            return 1.0;
-        double max_risk = 0.0;
-        int idx = get_closest_idx(path, last_closest_idx_);
-        double lane_x = path->poses[idx].pose.position.x;
-        double lane_y = path->poses[idx].pose.position.y;
-
-        for (auto &[id, obs] : tracked_obstacles_)
+        switch (lane)
         {
-            if (std::hypot(obs.x - lane_x, obs.y - lane_y) < 0.7)
-            {
-                double obs_spd = std::hypot(obs.vx, obs.vy);
-                double r = (obs_spd > current_speed_ - 0.2) ? 0.2 : 0.8;
-                Point p = transform_to_body(obs.x, obs.y);
-                if (std::abs(p.x) < 0.6)
-                    r = 1.0;
-
-                // 현재 타겟 차선인 경우에만 장애물 객체에 점수 기록 (시각화용)
-                if (lane == current_target_lane_)
-                {
-                    obs.risk_score = r;
-                }
-
-                if (r > max_risk)
-                    max_risk = r;
-            }
+        case LaneID::LANE_1:
+            return "L1(Static)";
+        case LaneID::LANE_2:
+            return "L2(Slow)";
+        case LaneID::LANE_3:
+            return "L3(Fast)";
+        default:
+            return "NONE";
         }
-        return max_risk;
     }
 
-    int check_safe_join_trajectory(LaneID target_lane)
+    // ========================================================================
+    // BODY FRAME TRANSFORM
+    // ========================================================================
+
+    void update_obstacle_body_frame(ObstacleInfo &obs)
     {
-        double my_yaw = tf2::getYaw(current_pose_.orientation);
-        double cos_yaw = cos(my_yaw);
-        double sin_yaw = sin(my_yaw);
+        double dx = obs.x - ego_x_;
+        double dy = obs.y - ego_y_;
+        double cos_yaw = std::cos(ego_yaw_);
+        double sin_yaw = std::sin(ego_yaw_);
 
-        bool need_boost = false;
+        obs.rel_x = dx * cos_yaw + dy * sin_yaw;
+        obs.rel_y = -dx * sin_yaw + dy * cos_yaw;
+        obs.rel_vx = (obs.vx * cos_yaw + obs.vy * sin_yaw) - ego_speed_;
+    }
 
-        std::vector<ObstacleState> target_obs;
-        for (const auto &[id, obs] : tracked_obstacles_)
+    // ========================================================================
+    // THREAT ASSESSMENT
+    // ========================================================================
+
+    struct LaneStatus
+    {
+        bool blocked_front = false;
+        bool danger_rear = false;
+        bool blind_spot = false;
+        double front_dist = 999.0;
+        double front_speed = 0.0;
+        double rear_dist = 999.0;
+        double rear_speed = 0.0;
+        int front_obs_id = -1;
+    };
+
+    LaneStatus assess_lane(LaneID lane)
+    {
+        LaneStatus status;
+        double current_sec = now_sec();
+
+        for (auto &[id, obs] : obstacles_)
         {
-            if (get_lane_id_of_point(obs.x, obs.y) == target_lane)
+            if ((current_sec - obs.last_seen_sec) > 0.5)
+                continue;
+
+            update_obstacle_body_frame(obs);
+
+            bool is_on_lane = (obs.lane == lane);
+            bool is_adjacent = false;
+
+            if (!is_on_lane)
             {
-                target_obs.push_back(obs);
+                double d = get_dist_to_lane(get_lane_path(lane), obs.x, obs.y);
+                is_adjacent = (d < LANE_THRESHOLD * 1.5);
             }
-        }
 
-        if (target_obs.empty())
-            return 1;
+            if (!is_on_lane && !is_adjacent)
+                continue;
 
-        for (double t = 0.0; t <= predict_time_; t += predict_step_)
-        {
-            for (const auto &obs : target_obs)
+            double lateral_dist = std::abs(obs.rel_y);
+
+            // Front obstacle
+            if (obs.rel_x > -VEHICLE_LENGTH_R && obs.rel_x < 5.0)
             {
-                double dx = obs.x - current_pose_.position.x;
-                double dy = obs.y - current_pose_.position.y;
-                double body_x_0 = dx * cos_yaw + dy * sin_yaw;
-                double obs_vx_proj = obs.vx * cos_yaw + obs.vy * sin_yaw;
-                double future_body_x = body_x_0 + (obs_vx_proj * t) - (current_speed_ * t);
-
-                if (future_body_x > -static_margin_rear_ && future_body_x < static_margin_front_)
+                if (lateral_dist < SIDE_MARGIN)
                 {
-                    if (t < 0.5 && body_x_0 < 0 && obs_vx_proj > current_speed_)
+                    if (obs.rel_x < status.front_dist)
                     {
-                        double future_boost_x = body_x_0 + (obs_vx_proj * t) - (boost_speed_ * t);
-                        if (future_boost_x < -static_margin_rear_)
+                        status.front_dist = obs.rel_x;
+                        status.front_speed = obs.speed;
+                        status.front_obs_id = id;
+
+                        if (obs.rel_x < FRONT_SAFE_DIST)
                         {
-                            need_boost = true;
-                            continue;
+                            status.blocked_front = true;
                         }
                     }
-                    return 0;
+                }
+            }
+
+            // Rear obstacle
+            if (obs.rel_x < VEHICLE_LENGTH_F && obs.rel_x > -3.0)
+            {
+                if (lateral_dist < SIDE_MARGIN)
+                {
+                    double rear_d = -obs.rel_x;
+                    if (rear_d > 0 && rear_d < status.rear_dist)
+                    {
+                        status.rear_dist = rear_d;
+                        status.rear_speed = obs.speed;
+
+                        if (rear_d < REAR_DANGER_DIST && obs.speed > ego_speed_ + 0.1)
+                        {
+                            status.danger_rear = true;
+                        }
+                    }
+                }
+            }
+
+            // Blind spot
+            if (std::abs(obs.rel_x) < BLIND_SPOT_LENGTH && lateral_dist < SIDE_MARGIN * 1.5)
+            {
+                status.blind_spot = true;
+            }
+        }
+
+        return status;
+    }
+
+    // ========================================================================
+    // LANE CHANGE DECISION
+    // ========================================================================
+
+    LaneID choose_best_lane()
+    {
+        LaneStatus status_current = assess_lane(current_lane_);
+
+        if (!status_current.blocked_front && status_current.front_dist > FRONT_SAFE_DIST)
+        {
+            return current_lane_;
+        }
+
+        std::vector<LaneID> candidates;
+
+        if (current_lane_ == LaneID::LANE_1)
+        {
+            candidates = {LaneID::LANE_2};
+        }
+        else if (current_lane_ == LaneID::LANE_2)
+        {
+            candidates = {LaneID::LANE_3, LaneID::LANE_1};
+        }
+        else
+        {
+            candidates = {LaneID::LANE_2};
+        }
+
+        LaneID best = current_lane_;
+        double best_score = -100.0;
+
+        double current_score = status_current.front_dist;
+        if (status_current.blocked_front)
+            current_score -= 2.0;
+
+        for (LaneID cand : candidates)
+        {
+            LaneStatus status = assess_lane(cand);
+
+            if (status.blind_spot)
+                continue;
+            if (status.danger_rear)
+                continue;
+
+            double score = status.front_dist;
+
+            if (!status.blocked_front && status.front_dist > 2.0)
+            {
+                score += 3.0;
+            }
+
+            if (cand == LaneID::LANE_1)
+            {
+                score -= 1.0;
+            }
+
+            if (cand == LaneID::LANE_3 && ego_speed_ > 0.6)
+            {
+                score += 0.5;
+            }
+
+            if (score > best_score && score > current_score + 0.3)
+            {
+                best_score = score;
+                best = cand;
+            }
+        }
+
+        return best;
+    }
+
+    bool is_lane_change_safe(LaneID target)
+    {
+        LaneStatus status = assess_lane(target);
+
+        if (status.blind_spot)
+            return false;
+        if (status.danger_rear)
+            return false;
+        if (status.front_dist < FRONT_CRITICAL_DIST)
+            return false;
+
+        for (double t = 0.1; t <= 1.5; t += 0.2)
+        {
+            double my_future_x = ego_x_ + ego_speed_ * std::cos(ego_yaw_) * t;
+            double my_future_y = ego_y_ + ego_speed_ * std::sin(ego_yaw_) * t;
+
+            for (const auto &[id, obs] : obstacles_)
+            {
+                double obs_future_x = obs.x + obs.vx * t;
+                double obs_future_y = obs.y + obs.vy * t;
+
+                double dist = std::hypot(my_future_x - obs_future_x, my_future_y - obs_future_y);
+                if (dist < VEHICLE_LENGTH * 0.9)
+                {
+                    return false;
                 }
             }
         }
-        return need_boost ? 2 : 1;
+
+        return true;
     }
+
+    // ========================================================================
+    // STATE MACHINE
+    // ========================================================================
+
+    void update_state_machine()
+    {
+        LaneStatus current_status = assess_lane(current_lane_);
+        double current_sec = now_sec();
+
+        // Periodic logging
+        if ((current_sec - last_detail_log_sec_) > 2.0)
+        {
+            RCLCPP_INFO(this->get_logger(),
+                        "[%s] Lane=%s | Speed=%.2f | Front=%.2f@%.2f | Rear=%.2f@%.2f | Obs=%zu",
+                        state_to_string(current_state_).c_str(),
+                        lane_to_string(current_lane_).c_str(),
+                        ego_speed_,
+                        current_status.front_dist, current_status.front_speed,
+                        current_status.rear_dist, current_status.rear_speed,
+                        obstacles_.size());
+            last_detail_log_sec_ = current_sec;
+        }
+
+        switch (current_state_)
+        {
+        case DrivingState::CRUISE:
+        {
+            if (current_status.danger_rear)
+            {
+                current_state_ = DrivingState::EMERGENCY_ACCEL;
+                RCLCPP_WARN(this->get_logger(), "⚠️ REAR THREAT! Accelerating...");
+                break;
+            }
+
+            if (current_status.front_dist < FRONT_EMERGENCY_DIST)
+            {
+                current_state_ = DrivingState::EMERGENCY_BRAKE;
+                RCLCPP_WARN(this->get_logger(), "🛑 EMERGENCY BRAKE! Front=%.2f", current_status.front_dist);
+                break;
+            }
+
+            if (current_status.blocked_front ||
+                (current_status.front_dist < FRONT_SAFE_DIST && current_status.front_speed < ego_speed_ - 0.05))
+            {
+                LaneID best = choose_best_lane();
+                if (best != current_lane_)
+                {
+                    target_lane_ = best;
+                    current_state_ = DrivingState::PREPARE_CHANGE;
+                    safe_check_count_ = 0;
+                    RCLCPP_INFO(this->get_logger(), "🔄 Preparing lane change: %s -> %s",
+                                lane_to_string(current_lane_).c_str(),
+                                lane_to_string(target_lane_).c_str());
+                }
+            }
+            break;
+        }
+
+        case DrivingState::PREPARE_CHANGE:
+        {
+            if (is_lane_change_safe(target_lane_))
+            {
+                safe_check_count_++;
+                if (safe_check_count_ >= SAFE_CHECK_REQUIRED)
+                {
+                    current_state_ = DrivingState::LANE_CHANGING;
+                    lane_change_committed_ = true;
+                    lane_change_start_sec_ = current_sec;
+                    RCLCPP_INFO(this->get_logger(), "✅ Lane change COMMITTED: %s -> %s",
+                                lane_to_string(current_lane_).c_str(),
+                                lane_to_string(target_lane_).c_str());
+                }
+            }
+            else
+            {
+                safe_check_count_ = std::max(0, safe_check_count_ - 1);
+            }
+
+            if (safe_check_count_ == 0)
+            {
+                if (!current_status.blocked_front && current_status.front_dist > FRONT_SAFE_DIST)
+                {
+                    current_state_ = DrivingState::CRUISE;
+                    target_lane_ = current_lane_;
+                    RCLCPP_INFO(this->get_logger(), "Lane change aborted - current lane OK");
+                    break;
+                }
+            }
+
+            if (current_status.front_dist < FRONT_EMERGENCY_DIST)
+            {
+                current_state_ = DrivingState::EMERGENCY_BRAKE;
+            }
+            else if (current_status.danger_rear)
+            {
+                current_state_ = DrivingState::EMERGENCY_ACCEL;
+            }
+            break;
+        }
+
+        case DrivingState::LANE_CHANGING:
+        {
+            if (current_lane_ == target_lane_)
+            {
+                double elapsed = current_sec - lane_change_start_sec_;
+                if (elapsed > 0.3)
+                {
+                    current_state_ = DrivingState::CRUISE;
+                    lane_change_committed_ = false;
+                    RCLCPP_INFO(this->get_logger(), "✅ Lane change COMPLETE: now in %s",
+                                lane_to_string(current_lane_).c_str());
+                }
+            }
+
+            double elapsed = current_sec - lane_change_start_sec_;
+            if (elapsed > 4.0)
+            {
+                current_state_ = DrivingState::CRUISE;
+                lane_change_committed_ = false;
+                target_lane_ = current_lane_;
+                RCLCPP_WARN(this->get_logger(), "Lane change TIMEOUT");
+            }
+            break;
+        }
+
+        case DrivingState::EMERGENCY_ACCEL:
+        {
+            if (!current_status.danger_rear && current_status.rear_dist > REAR_DANGER_DIST)
+            {
+                current_state_ = DrivingState::CRUISE;
+                RCLCPP_INFO(this->get_logger(), "Rear clear, resuming cruise");
+            }
+
+            if (current_status.front_dist < FRONT_CRITICAL_DIST)
+            {
+                LaneID escape = choose_best_lane();
+                if (escape != current_lane_ && is_lane_change_safe(escape))
+                {
+                    target_lane_ = escape;
+                    current_state_ = DrivingState::LANE_CHANGING;
+                    lane_change_committed_ = true;
+                    lane_change_start_sec_ = current_sec;
+                }
+            }
+            break;
+        }
+
+        case DrivingState::EMERGENCY_BRAKE:
+        {
+            if (current_status.front_dist > FRONT_SAFE_DIST)
+            {
+                current_state_ = DrivingState::CRUISE;
+                RCLCPP_INFO(this->get_logger(), "Front clear, resuming cruise");
+            }
+
+            LaneID escape = choose_best_lane();
+            if (escape != current_lane_ && is_lane_change_safe(escape))
+            {
+                target_lane_ = escape;
+                current_state_ = DrivingState::PREPARE_CHANGE;
+                safe_check_count_ = SAFE_CHECK_REQUIRED - 1;
+            }
+            break;
+        }
+        }
+    }
+
+    std::string state_to_string(DrivingState s)
+    {
+        switch (s)
+        {
+        case DrivingState::CRUISE:
+            return "CRUISE";
+        case DrivingState::PREPARE_CHANGE:
+            return "PREPARE";
+        case DrivingState::LANE_CHANGING:
+            return "CHANGING";
+        case DrivingState::EMERGENCY_ACCEL:
+            return "ACCEL!";
+        case DrivingState::EMERGENCY_BRAKE:
+            return "BRAKE!";
+        default:
+            return "???";
+        }
+    }
+
+    // ========================================================================
+    // PATH FOLLOWING
+    // ========================================================================
+
+    int find_closest_index(const nav_msgs::msg::Path::SharedPtr &path)
+    {
+        if (!path || path->poses.empty())
+            return 0;
+
+        int n = path->poses.size();
+        int best = last_closest_idx_;
+        double min_d = 999.0;
+
+        int start = std::max(0, last_closest_idx_ - 10);
+        int end = std::min(n, last_closest_idx_ + 100);
+
+        for (int i = start; i < end; ++i)
+        {
+            int idx = i % n;
+            double d = std::hypot(path->poses[idx].pose.position.x - ego_x_,
+                                  path->poses[idx].pose.position.y - ego_y_);
+            if (d < min_d)
+            {
+                min_d = d;
+                best = idx;
+            }
+        }
+
+        return best;
+    }
+
+    int find_lookahead_index(const nav_msgs::msg::Path::SharedPtr &path, int closest, double dist)
+    {
+        if (!path || path->poses.empty())
+            return 0;
+
+        int n = path->poses.size();
+
+        for (int i = 0; i < 150; ++i)
+        {
+            int idx = (closest + i) % n;
+            double d = std::hypot(path->poses[idx].pose.position.x - ego_x_,
+                                  path->poses[idx].pose.position.y - ego_y_);
+            if (d >= dist)
+                return idx;
+        }
+
+        return (closest + 50) % n;
+    }
+
+    double compute_steering(const nav_msgs::msg::Path::SharedPtr &path, int closest, int lookahead)
+    {
+        if (!path || path->poses.empty())
+            return 0.0;
+
+        int n = path->poses.size();
+
+        double tx = path->poses[lookahead].pose.position.x;
+        double ty = path->poses[lookahead].pose.position.y;
+
+        int next = (lookahead + 5) % n;
+        double road_dx = path->poses[next].pose.position.x - tx;
+        double road_dy = path->poses[next].pose.position.y - ty;
+        double road_yaw = std::atan2(road_dy, road_dx);
+
+        double dx = tx - ego_x_;
+        double dy = ty - ego_y_;
+        double target_yaw = std::atan2(dy, dx);
+        double dist = std::hypot(dx, dy);
+
+        double heading_err = target_yaw - ego_yaw_;
+        while (heading_err > M_PI)
+            heading_err -= 2 * M_PI;
+        while (heading_err < -M_PI)
+            heading_err += 2 * M_PI;
+
+        double road_err = road_yaw - ego_yaw_;
+        while (road_err > M_PI)
+            road_err -= 2 * M_PI;
+        while (road_err < -M_PI)
+            road_err += 2 * M_PI;
+
+        double steer_pp = std::atan2(2.0 * wheelbase_ * std::sin(heading_err), std::max(dist, 0.1));
+        double steer_cmd = steer_pp * weight_path_ + road_err * weight_heading_;
+
+        steer_cmd = steer_cmd * steer_alpha_ + last_steer_ * (1.0 - steer_alpha_);
+        steer_cmd = std::clamp(steer_cmd, -max_steer_, max_steer_);
+
+        return steer_cmd;
+    }
+
+    // ========================================================================
+    // VELOCITY CONTROL
+    // ========================================================================
+
+    double compute_velocity()
+    {
+        LaneStatus status = assess_lane(current_lane_);
+        double vel = target_speed_;
+
+        switch (current_state_)
+        {
+        case DrivingState::CRUISE:
+        {
+            if (status.blocked_front)
+            {
+                double gap = status.front_dist - FRONT_CRITICAL_DIST;
+                vel = std::min(target_speed_, std::max(status.front_speed, gap * 1.5));
+            }
+            break;
+        }
+
+        case DrivingState::PREPARE_CHANGE:
+        {
+            LaneStatus target_status = assess_lane(target_lane_);
+
+            if (target_status.rear_speed > ego_speed_)
+            {
+                vel = boost_speed_;
+            }
+            else if (status.blocked_front)
+            {
+                vel = std::max(0.3, status.front_speed);
+            }
+            break;
+        }
+
+        case DrivingState::LANE_CHANGING:
+        {
+            vel = boost_speed_;
+            break;
+        }
+
+        case DrivingState::EMERGENCY_ACCEL:
+        {
+            vel = std::min(1.3, boost_speed_ * 1.3);
+            break;
+        }
+
+        case DrivingState::EMERGENCY_BRAKE:
+        {
+            if (status.front_dist < FRONT_EMERGENCY_DIST * 0.7)
+                vel = 0.0;
+            else
+                vel = std::max(0.0, (status.front_dist - 0.15) * 2.0);
+            break;
+        }
+        }
+
+        return std::clamp(vel, 0.0, 1.5);
+    }
+
+    // ========================================================================
+    // MAIN CONTROL LOOP
+    // ========================================================================
 
     void control_loop()
     {
-        double current_lane_risk = get_lane_max_risk(current_target_lane_);
-        LaneID best_lane = current_target_lane_;
-        bool boost_needed = false;
-
-        if (current_lane_risk > 0.6)
-        {
-            double min_risk = current_lane_risk;
-            std::vector<LaneID> candidates;
-            if (current_target_lane_ == LANE_2)
-                candidates = {LANE_1, LANE_3};
-            else
-                candidates = {LANE_2};
-
-            for (LaneID cand : candidates)
-            {
-                int safety = check_safe_join_trajectory(cand);
-
-                if (safety == 0)
-                    continue;
-
-                double cand_risk = get_lane_max_risk(cand);
-                if (safety == 2)
-                    cand_risk *= 0.5;
-
-                if (cand_risk < min_risk - 0.2)
-                {
-                    min_risk = cand_risk;
-                    best_lane = cand;
-                    boost_needed = (safety == 2);
-                }
-            }
-        }
-
-        if (best_lane != current_target_lane_)
-        {
-            current_target_lane_ = best_lane;
-            is_changing_lane_ = true;
-            if (boost_needed)
-                RCLCPP_INFO(this->get_logger(), "🚀 AGGRESSIVE BOOST -> Lane %d", best_lane);
-            else
-                RCLCPP_INFO(this->get_logger(), "Lane Change -> %d", best_lane);
-        }
-
-        nav_msgs::msg::Path::SharedPtr target_path = get_path_by_id(current_target_lane_);
-        if (!target_path || target_path->poses.empty())
+        if (!pose_received_)
             return;
 
-        int closest_idx = get_closest_idx(target_path, last_closest_idx_);
-        last_closest_idx_ = closest_idx;
-
-        double err = std::hypot(target_path->poses[closest_idx].pose.position.x - current_pose_.position.x,
-                                target_path->poses[closest_idx].pose.position.y - current_pose_.position.y);
-
-        if (is_changing_lane_ && err < 0.3)
-            is_changing_lane_ = false;
-
-        double l_dist = std::min(max_lookahead_, base_lookahead_ + err * error_gain_);
-        int l_idx = closest_idx;
-        for (int i = 0; i < 100; ++i)
+        nav_msgs::msg::Path::SharedPtr path = get_lane_path(target_lane_);
+        if (!path || path->poses.empty())
         {
-            int idx = (closest_idx + i) % target_path->poses.size();
-            double d = std::hypot(target_path->poses[idx].pose.position.x - current_pose_.position.x,
-                                  target_path->poses[idx].pose.position.y - current_pose_.position.y);
-            if (d > l_dist)
-            {
-                l_idx = idx;
-                break;
-            }
+            path = get_lane_path(current_lane_);
         }
-
-        int next_idx = (l_idx + 2) % target_path->poses.size();
-        double road_dx = target_path->poses[next_idx].pose.position.x - target_path->poses[l_idx].pose.position.x;
-        double road_dy = target_path->poses[next_idx].pose.position.y - target_path->poses[l_idx].pose.position.y;
-        double road_yaw = atan2(road_dy, road_dx);
-
-        double tx = target_path->poses[l_idx].pose.position.x;
-        double ty = target_path->poses[l_idx].pose.position.y;
-        double pp_yaw = atan2(ty - current_pose_.position.y, tx - current_pose_.position.x);
-        double my_yaw = tf2::getYaw(current_pose_.orientation);
-
-        double diff_road = road_yaw - my_yaw;
-        while (diff_road > M_PI)
-            diff_road -= 2 * M_PI;
-        while (diff_road < -M_PI)
-            diff_road += 2 * M_PI;
-        double diff_pp = pp_yaw - my_yaw;
-        while (diff_pp > M_PI)
-            diff_pp -= 2 * M_PI;
-        while (diff_pp < -M_PI)
-            diff_pp += 2 * M_PI;
-
-        double steer_pp = atan2(2.0 * wheelbase_ * sin(diff_pp), l_dist);
-        double final_steer = (steer_pp * weight_path_) + (diff_road * weight_heading_);
-        double s_cmd = final_steer * steer_alpha_ + last_steer_cmd_ * (1.0 - steer_alpha_);
-        last_steer_cmd_ = s_cmd;
-        s_cmd = std::max(-max_steer_, std::min(max_steer_, s_cmd));
-
-        bool is_emergency_braking = false;
-        double target_vel = target_speed_;
-
-        if (is_changing_lane_ || boost_needed)
+        if (!path || path->poses.empty())
         {
-            target_vel = boost_speed_;
+            path = path_lane_2_;
         }
+        if (!path || path->poses.empty())
+            return;
 
-        for (const auto &[id, obs] : tracked_obstacles_)
-        {
-            Point p = transform_to_body(obs.x, obs.y);
-            if (std::abs(p.y) < 0.5)
-            {
-                double stop_threshold = 0.7;
-                double resume_threshold = 1.5; // 다시 출발할 때는 더 확실하게 멉니다
+        update_state_machine();
 
-                if (boost_needed || is_changing_lane_)
-                {
-                    stop_threshold = 0.3;
-                    resume_threshold = 0.6;
-                }
+        int closest = find_closest_index(path);
+        last_closest_idx_ = closest;
 
-                // ==========================================
-                // [망설임 방지] Hysteresis Logic 적용
-                // ==========================================
-                if (p.x > 0)
-                {
-                    if (is_waiting_for_gap_)
-                    {
-                        // 이미 멈춰있는 상태라면, 장애물이 resume_threshold보다 멀어져야 출발
-                        if (p.x < resume_threshold)
-                        {
-                            target_vel = 0.0;
-                            is_emergency_braking = true;
-                        }
-                        else
-                        {
-                            // 충분히 멀어짐 -> 출발!
-                            is_waiting_for_gap_ = false;
-                        }
-                    }
-                    else
-                    {
-                        // 달리는 중이라면, stop_threshold 안으로 들어오면 정지
-                        if (p.x < stop_threshold)
-                        {
-                            target_vel = 0.0;
-                            is_emergency_braking = true;
-                            is_waiting_for_gap_ = true; // 대기 모드 진입
-                        }
-                    }
-                }
+        double path_error = std::hypot(
+            path->poses[closest].pose.position.x - ego_x_,
+            path->poses[closest].pose.position.y - ego_y_);
 
-                if (!is_emergency_braking && p.x > 0 && p.x < 2.0 && current_speed_ > obs.vx)
-                {
-                    if (!boost_needed && !is_changing_lane_)
-                    {
-                        target_vel = obs.vx;
-                    }
-                }
-            }
-        }
+        double lookahead_dist = base_lookahead_ + path_error * 0.5;
+        lookahead_dist = std::clamp(lookahead_dist, base_lookahead_, max_lookahead_);
 
-        // [망설임 방지 2] 너무 느린 속도는 0으로 하거나 최소 속도 보장
-        if (!is_emergency_braking && target_vel > 0.01 && target_vel < 0.3)
-            target_vel = 0.5;
+        int lookahead_idx = find_lookahead_index(path, closest, lookahead_dist);
 
-        double accel = (target_vel - current_speed_) * 1.0;
+        double steer = compute_steering(path, closest, lookahead_idx);
+        last_steer_ = steer;
 
-        // ==========================================
-        // [후진 방지] Anti-Reverse Logic
-        // ==========================================
-        // 1. 이미 차가 멈춰있거나 아주 느릴 때, 목표 속도가 0이면
-        //    강한 음수 가속도(후진 명령이 될 수 있음)를 보내지 않고 브레이크만 유지 (-1.0은 보통 브레이크)
-        if (current_speed_ < 0.1 && target_vel == 0.0)
-        {
-            accel = -1.0; // 정지 유지 (Simulator에 따라 -1이 후진이 될 수도 있으니 주의)
-        }
-
-        // 2. [강력한 방지] 만약 차가 뒤로 밀리고 있다면(음수 속도),
-        //    즉시 양수 가속도를 주어 멈추게 함 (Hill Start Assist 처럼)
-        //    단, 주행 방향(시계방향)과 로컬 좌표계가 정렬되어 있다는 가정 하에 x 속도가 음수면 후진임.
-        //    여기서는 current_speed_가 절대값이 아니라 부호가 있다고 가정하지 않았으나(pose_callback에서 hypot사용),
-        //    만약 simulator feedback이 음수 속도를 준다면 아래 로직이 유효함.
-        //    pose_callback에서 hypot만 썼으므로 current_speed_는 항상 양수임.
-        //    따라서 "뒤로 가는 것"을 감지하려면 이전 pose와 현재 pose 벡터 내적을 해야 함.
-        //    하지만 간단히, '가속도가 계속 음수인데 차가 멈췄다'면 Accel을 0으로 컷 해주는게 안전함.
-
-        if (current_speed_ < 0.05 && accel < -0.5)
-        {
-            // 이미 멈췄는데 계속 뒤로 당기면 -> 0으로 중립
-            // (경사로가 없다면 0이 안전, 경사로라면 -0.1 정도가 안전)
-            accel = 0.0;
-        }
+        double vel = compute_velocity();
 
         geometry_msgs::msg::Accel cmd;
-        cmd.linear.x = std::max(-1.0, std::min(1.0, accel));
-        cmd.angular.z = s_cmd;
+        cmd.linear.x = vel;
+        cmd.angular.z = steer;
         accel_pub_->publish(cmd);
 
-        visualization_msgs::msg::Marker m;
-        m.header.frame_id = "world";
-        m.header.stamp = this->now();
-        m.id = 999;
-        m.type = 2;
-        m.action = 0;
-        m.pose.position.x = tx;
-        m.pose.position.y = ty;
-        m.pose.position.z = 0.5;
-        m.scale.x = 0.3;
-        m.scale.y = 0.3;
-        m.scale.z = 0.3;
-        m.color.a = 1.0;
-        m.color.r = 1.0;
-        m.color.g = 0.0;
-        m.color.b = 1.0;
-        debug_marker_pub_->publish(m);
-
-        publish_risk_visualization();
+        publish_debug_visualization(path, lookahead_idx);
     }
 
-    void publish_risk_visualization()
+    // ========================================================================
+    // VISUALIZATION
+    // ========================================================================
+
+    void publish_debug_visualization(const nav_msgs::msg::Path::SharedPtr &path, int lookahead_idx)
     {
-        visualization_msgs::msg::MarkerArray markers;
-        for (auto &[id, obs] : tracked_obstacles_)
+        if (!path || lookahead_idx >= (int)path->poses.size())
+            return;
+
+        // Lookahead marker
+        visualization_msgs::msg::Marker marker;
+        marker.header.frame_id = "world";
+        marker.header.stamp = this->now();
+        marker.ns = "lookahead";
+        marker.id = 0;
+        marker.type = visualization_msgs::msg::Marker::SPHERE;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.pose.position.x = path->poses[lookahead_idx].pose.position.x;
+        marker.pose.position.y = path->poses[lookahead_idx].pose.position.y;
+        marker.pose.position.z = 0.2;
+        marker.scale.x = marker.scale.y = marker.scale.z = 0.12;
+
+        switch (current_state_)
         {
-            // 오래된 장애물은 표시하지 않음
-            if ((this->now() - obs.last_seen).seconds() > 1.0)
-                continue;
-
-            visualization_msgs::msg::Marker text;
-            text.header.frame_id = "world";
-            text.header.stamp = this->now();
-            text.ns = "risk_val";
-            text.id = id;
-            text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-            text.action = visualization_msgs::msg::Marker::ADD;
-            text.pose.position.x = obs.x;
-            text.pose.position.y = obs.y;
-            text.pose.position.z = 1.5; // 차 위로 잘 보이게 띄움
-            text.scale.z = 0.5;
-
-            text.color.a = 1.0;
-            // 리스크가 높으면 빨간색, 낮으면 초록색
-            if (obs.risk_score > 0.5)
-            {
-                text.color.r = 1.0;
-                text.color.g = 0.0;
-            }
-            else
-            {
-                text.color.r = 0.0;
-                text.color.g = 1.0;
-            }
-            text.color.b = 0.0;
-
-            // [수정] ID 제거하고 Risk Score만 소수점 2자리로 표시
-            std::stringstream ss;
-            ss << std::fixed << std::setprecision(2) << obs.risk_score;
-            text.text = ss.str();
-
-            markers.markers.push_back(text);
+        case DrivingState::CRUISE:
+            marker.color.r = 0.0;
+            marker.color.g = 1.0;
+            marker.color.b = 0.0;
+            break;
+        case DrivingState::PREPARE_CHANGE:
+        case DrivingState::LANE_CHANGING:
+            marker.color.r = 0.0;
+            marker.color.g = 0.5;
+            marker.color.b = 1.0;
+            break;
+        case DrivingState::EMERGENCY_ACCEL:
+            marker.color.r = 1.0;
+            marker.color.g = 0.5;
+            marker.color.b = 0.0;
+            break;
+        case DrivingState::EMERGENCY_BRAKE:
+            marker.color.r = 1.0;
+            marker.color.g = 0.0;
+            marker.color.b = 0.0;
+            break;
         }
-        risk_text_pub_->publish(markers);
+        marker.color.a = 0.9;
+        marker.lifetime = rclcpp::Duration::from_seconds(0.1);
+        lookahead_pub_->publish(marker);
+
+        // Debug markers
+        visualization_msgs::msg::MarkerArray debug_markers;
+        int id = 0;
+
+        double cos_yaw = std::cos(ego_yaw_);
+        double sin_yaw = std::sin(ego_yaw_);
+
+        tf2::Quaternion q;
+        q.setRPY(0, 0, ego_yaw_);
+        auto quat_msg = tf2::toMsg(q);
+
+        // Front safety zone (GREEN)
+        visualization_msgs::msg::Marker front_zone;
+        front_zone.header.frame_id = "world";
+        front_zone.header.stamp = this->now();
+        front_zone.ns = "safety";
+        front_zone.id = id++;
+        front_zone.type = visualization_msgs::msg::Marker::CUBE;
+        front_zone.action = visualization_msgs::msg::Marker::ADD;
+        front_zone.pose.position.x = ego_x_ + cos_yaw * (VEHICLE_LENGTH_F + FRONT_SAFE_DIST / 2);
+        front_zone.pose.position.y = ego_y_ + sin_yaw * (VEHICLE_LENGTH_F + FRONT_SAFE_DIST / 2);
+        front_zone.pose.position.z = 0.02;
+        front_zone.pose.orientation = quat_msg;
+        front_zone.scale.x = FRONT_SAFE_DIST;
+        front_zone.scale.y = SIDE_MARGIN * 2;
+        front_zone.scale.z = 0.01;
+        front_zone.color.r = 0.0;
+        front_zone.color.g = 1.0;
+        front_zone.color.b = 0.0;
+        front_zone.color.a = 0.3;
+        front_zone.lifetime = rclcpp::Duration::from_seconds(0.1);
+        debug_markers.markers.push_back(front_zone);
+
+        // Rear safety zone (ORANGE)
+        visualization_msgs::msg::Marker rear_zone;
+        rear_zone.header.frame_id = "world";
+        rear_zone.header.stamp = this->now();
+        rear_zone.ns = "safety";
+        rear_zone.id = id++;
+        rear_zone.type = visualization_msgs::msg::Marker::CUBE;
+        rear_zone.action = visualization_msgs::msg::Marker::ADD;
+        rear_zone.pose.position.x = ego_x_ - cos_yaw * (VEHICLE_LENGTH_R + REAR_DANGER_DIST / 2);
+        rear_zone.pose.position.y = ego_y_ - sin_yaw * (VEHICLE_LENGTH_R + REAR_DANGER_DIST / 2);
+        rear_zone.pose.position.z = 0.02;
+        rear_zone.pose.orientation = quat_msg;
+        rear_zone.scale.x = REAR_DANGER_DIST;
+        rear_zone.scale.y = SIDE_MARGIN * 2;
+        rear_zone.scale.z = 0.01;
+        rear_zone.color.r = 1.0;
+        rear_zone.color.g = 0.5;
+        rear_zone.color.b = 0.0;
+        rear_zone.color.a = 0.3;
+        rear_zone.lifetime = rclcpp::Duration::from_seconds(0.1);
+        debug_markers.markers.push_back(rear_zone);
+
+        // State text
+        visualization_msgs::msg::Marker text;
+        text.header.frame_id = "world";
+        text.header.stamp = this->now();
+        text.ns = "state";
+        text.id = id++;
+        text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        text.action = visualization_msgs::msg::Marker::ADD;
+        text.pose.position.x = ego_x_;
+        text.pose.position.y = ego_y_;
+        text.pose.position.z = 0.5;
+        text.scale.z = 0.15;
+        text.color.r = 1.0;
+        text.color.g = 1.0;
+        text.color.b = 1.0;
+        text.color.a = 1.0;
+
+        std::stringstream ss;
+        ss << state_to_string(current_state_) << "\n"
+           << std::fixed << std::setprecision(2) << ego_speed_ << " m/s\n"
+           << lane_to_string(current_lane_);
+        if (target_lane_ != current_lane_)
+        {
+            ss << " -> " << lane_to_string(target_lane_);
+        }
+        text.text = ss.str();
+        text.lifetime = rclcpp::Duration::from_seconds(0.1);
+        debug_markers.markers.push_back(text);
+
+        debug_pub_->publish(debug_markers);
     }
-
-    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub_lane_1_, sub_lane_2_, sub_lane_3_;
-    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
-    rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr obs_sub_;
-    rclcpp::Publisher<geometry_msgs::msg::Accel>::SharedPtr accel_pub_;
-    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr local_path_pub_;
-    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr debug_marker_pub_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr risk_text_pub_;
-    rclcpp::TimerBase::SharedPtr timer_;
-
-    nav_msgs::msg::Path::SharedPtr path_lane_1_, path_lane_2_, path_lane_3_;
-    geometry_msgs::msg::Pose current_pose_;
-    std::map<int, ObstacleState> tracked_obstacles_;
-
-    LaneID current_target_lane_;
-    double current_speed_;
-    int last_closest_idx_;
-    double last_steer_cmd_;
-    bool is_changing_lane_;
 };
+
+// ============================================================================
+// MAIN
+// ============================================================================
 
 int main(int argc, char **argv)
 {
