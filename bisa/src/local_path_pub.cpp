@@ -568,18 +568,26 @@ namespace bisa
 
             const auto &lane = processed_lanes_[lane_idx];
             int n = lane.size();
+
+            // [보완] 인덱스 음수 방지 및 랩어라운드 처리 강화
             int i0 = ((idx - window) % n + n) % n;
-            int i1 = idx;
-            int i2 = (idx + window) % n;
+            int i1 = (idx % n + n) % n;
+            int i2 = ((idx + window) % n + n) % n;
 
             double a = std::hypot(lane[i1].x - lane[i0].x, lane[i1].y - lane[i0].y);
             double b = std::hypot(lane[i2].x - lane[i1].x, lane[i2].y - lane[i1].y);
             double c = std::hypot(lane[i0].x - lane[i2].x, lane[i0].y - lane[i2].y);
-            double s = (a + b + c) / 2.0;
-            double area = std::sqrt(std::max(0.0, s * (s - a) * (s - b) * (s - c)));
 
             if (a < 0.001 || b < 0.001 || c < 0.001)
                 return 0.0;
+
+            double s = (a + b + c) / 2.0;
+            double area_sq = s * (s - a) * (s - b) * (s - c);
+
+            if (area_sq < 0.0)
+                return 0.0; // 부동소수점 오차 방지
+
+            double area = std::sqrt(area_sq);
             return 4.0 * area / (a * b * c);
         }
 
@@ -767,32 +775,53 @@ namespace bisa
             double coll_dist;
             int target_idx = lane_to_int(target);
 
-            // [수정] ignore_id 인자 제거 및 엄격한 검사 수행
-            // 앞차와 안전거리를(0.5m) 유지하고 있다면, 충돌반경(0.22m) 내에 들어오지 않으므로
-            // 정상적인 경우라면 여기서 false가 나오지 않음.
+            // 1. 경로 충돌 예측 (엄격한 검사 유지)
             if (check_path_collision(target_idx, coll_dist))
             {
                 if (coll_dist < 0.5)
                     return false;
             }
 
+            // 2. 코너링 중일 때는 더 보수적으로 판단 (좌표 왜곡 보정)
+            double safety_margin_scale = is_in_corner_ ? 1.5 : 1.0;
+
             for (const auto &[id, obs] : obstacles_)
             {
                 if (obs.lane != target)
                     continue;
+
                 double rx = obs.rel_x;
-                // Target Lane 전방 체크
-                if (rx > -OBS_HALF_LENGTH && rx < FRONT_ZONE_LENGTH)
+
+                // [수정 A] 전방 체크: 코너에서는 더 멀리 봄
+                if (rx > -OBS_HALF_LENGTH && rx < FRONT_ZONE_LENGTH * safety_margin_scale)
                 {
-                    if (rx - OBS_HALF_LENGTH < FRONT_CRITICAL_DIST)
+                    if (rx - OBS_HALF_LENGTH < FRONT_CRITICAL_DIST * safety_margin_scale)
                         return false;
                 }
-                // Target Lane 후방 체크
-                if (rx < 0 && rx > -REAR_ZONE_LENGTH)
+
+                // [수정 B] 후방/측면 체크 (핵심 수정)
+                // 기존: 다가오는 속도(closing speed)가 빠를 때만 위험 -> 문제: 속도가 비슷하면 박음
+                // 변경: 속도와 무관하게 "내 차 옆~뒤" 공간(Blind Spot)에 있으면 절대 변경 금지
+
+                double blind_spot_rear = -REAR_ZONE_LENGTH; // 예: -1.0m
+
+                // 내 차 뒤쪽(음수) 영역에 있는데, 너무 가까우면(Blind Spot) 무조건 위험
+                if (rx < OBS_HALF_LENGTH && rx > blind_spot_rear)
                 {
-                    double closing = -obs.rel_vx;
-                    if (closing > 0.1 && (-rx / closing) < 1.5)
+                    // 1. 물리적 겹침 체크 (속도 무관)
+                    // 내 차 뒤 1m 이내에 차가 있으면 그냥 들어가지 마라
+                    if (rx > -1.0)
                         return false;
+
+                    // 2. 빠른 접근 체크 (기존 로직 유지하되 거리 확장)
+                    double closing = -obs.rel_vx;
+                    if (closing > 0.1)
+                    {
+                        double dist = -rx;
+                        // 코너에서는 TTC 여유를 더 둠
+                        if (dist / closing < (1.5 * safety_margin_scale))
+                            return false;
+                    }
                 }
             }
             return true;
