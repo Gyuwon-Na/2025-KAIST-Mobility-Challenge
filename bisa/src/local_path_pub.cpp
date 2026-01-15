@@ -13,7 +13,8 @@ namespace bisa
     // CONSTRUCTOR
     // ============================================================================
 
-    LocalPathPubCpp::LocalPathPubCpp() : Node("local_path_pub")
+    LocalPathPubCpp::LocalPathPubCpp() : Node("local_path_pub"),
+                                         lap_start_time_(this->now())
     {
         RCLCPP_INFO(this->get_logger(), "============================================");
         RCLCPP_INFO(this->get_logger(), "Local Path Publisher v3.1 (Merge Safety Fix)");
@@ -60,6 +61,7 @@ namespace bisa
         local_pub_ = this->create_publisher<nav_msgs::msg::Path>("/local_path", 10);
         target_vel_pub_ = this->create_publisher<std_msgs::msg::Float32>("/planning/target_v", 10);
         debug_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/planning/debug_markers", 10);
+        lap_info_pub_ = this->create_publisher<bisa::msg::LapInfo>("/lap_information", 10);
 
         // Main control timer (50Hz)
         timer_ = this->create_wall_timer(
@@ -165,19 +167,19 @@ namespace bisa
         if (prev_pose_valid_)
         {
             double dt = current_sec - prev_pose_sec_;
+            double dx = ego_x_ - prev_x_;
+            double dy = ego_y_ - prev_y_;
+
+            // [추가] 총 주행 거리 누적
+            total_distance_ += std::hypot(dx, dy);
+
             if (dt > 0.01 && dt < 0.5)
             {
-                double dx = ego_x_ - prev_x_;
-                double dy = ego_y_ - prev_y_;
                 double raw_speed = std::hypot(dx, dy) / dt;
-
-                // Check direction (forward or backward)
                 double move_angle = std::atan2(dy, dx);
                 double angle_diff = normalize_angle(move_angle - ego_yaw_);
                 if (std::abs(angle_diff) > M_PI / 2)
                     raw_speed = -raw_speed;
-
-                // Low-pass filter
                 ego_speed_ = ego_speed_ * 0.7 + raw_speed * 0.3;
             }
         }
@@ -1164,6 +1166,7 @@ namespace bisa
         // Check surrounding environment and update state machine
         current_surrounding_ = check_all_zones();
         update_state_machine();
+        publish_lap_info();
 
         // Periodic logging
         double current_sec = now_sec();
@@ -1305,7 +1308,46 @@ namespace bisa
         debug_pub_->publish(markers);
     }
 
-} // namespace bisa
+    void LocalPathPubCpp::publish_lap_info()
+    {
+        // 기준: Lane 2 (중앙 차선)
+        if (processed_lanes_[1].empty() || !pose_received_)
+            return;
+
+        size_t total = processed_lanes_[1].size();
+        if (total == 0)
+            return;
+
+        // Lane 2 기준 현재 위치에 가장 가까운 웨이포인트 찾기
+        // (Lane 1이나 3에 있어도 Lane 2 기준으로 진척도 계산)
+        int current_track_idx = find_closest_idx(1, ego_x_, ego_y_, true);
+
+        // 한 바퀴 완료 감지 (인덱스 급감 & 90% 이상 진행 상태에서 발생)
+        if (current_track_idx < prev_track_idx_ && prev_track_idx_ > total * 0.9)
+        {
+            lap_count_++;
+            lap_start_time_ = this->now();
+            RCLCPP_INFO(this->get_logger(),
+                        "🏁 Lap %d completed! Total dist: %.2fm",
+                        lap_count_, total_distance_);
+        }
+        prev_track_idx_ = current_track_idx;
+
+        double progress = (static_cast<double>(current_track_idx) / total) * 100.0;
+        double elapsed_time = (this->now() - lap_start_time_).seconds();
+
+        auto lap_info = bisa::msg::LapInfo();
+        lap_info.lap_count = lap_count_;
+        lap_info.progress = static_cast<float>(progress);
+        lap_info.current_waypoint = static_cast<int32_t>(current_track_idx);
+        lap_info.total_waypoints = static_cast<int32_t>(total);
+        lap_info.elapsed_time = static_cast<float>(elapsed_time);
+        lap_info.total_distance = static_cast<float>(total_distance_);
+
+        lap_info_pub_->publish(lap_info);
+    }
+
+}
 
 // ============================================================================
 // MAIN

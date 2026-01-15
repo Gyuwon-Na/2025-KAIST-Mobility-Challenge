@@ -19,6 +19,7 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include "bisa/msg/lap_info.hpp"
 
 #include <cmath>
 #include <limits>
@@ -202,6 +203,7 @@ namespace bisa
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr local_pub_;
         rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr target_vel_pub_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr debug_pub_;
+        rclcpp::Publisher<bisa::msg::LapInfo>::SharedPtr lap_info_pub_;
 
         // Timer
         rclcpp::TimerBase::SharedPtr timer_;
@@ -251,6 +253,12 @@ namespace bisa
         int last_closest_idx_[3] = {0, 0, 0};
         bool initial_search_done_ = false;
         double last_log_sec_ = 0.0;
+
+        // [추가] Lap Info Variables
+        int lap_count_ = 0;
+        double total_distance_ = 0.0;
+        rclcpp::Time lap_start_time_;
+        int prev_track_idx_ = 0; // Lane 2 기준 이전 인덱스
 
         // ========================================================================
         // UTILITY FUNCTIONS
@@ -335,6 +343,7 @@ namespace bisa
 
         void control_loop();
         void publish_debug_markers();
+        void publish_lap_info();
     };
 
 } // namespace bisa
