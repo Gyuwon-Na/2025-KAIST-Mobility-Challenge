@@ -22,14 +22,6 @@ class TunerNode(Node):
             SetParameters, "/mpc_path_tracker/set_parameters"
         )
 
-        # 클라이언트 2: Frenet Planner
-        # [주의] YAML 파일의 노드 이름은 frenet_planner지만,
-        # launch 파일이나 cpp 노드 초기화 시 이름이 다를 수 있으므로 확인 필요.
-        # 일단 frenet_planner.cpp에서는 "frenet_planner"로 초기화됨.
-        self.cli_frenet = self.create_client(
-            SetParameters, "/frenet_planner/set_parameters"
-        )
-
         self.get_logger().info(
             "Integrated Tuner Node Started. Connecting to services..."
         )
@@ -57,14 +49,9 @@ class TunerNode(Node):
 
         req.parameters = [param]
 
-        if target_node == "mpc":
-            if self.cli_mpc.service_is_ready():
-                future = self.cli_mpc.call_async(req)
-                future.add_done_callback(self.callback_done)
-        else:
-            if self.cli_frenet.service_is_ready():
-                future = self.cli_frenet.call_async(req)
-                future.add_done_callback(self.callback_done)
+        if self.cli_mpc.service_is_ready():
+            future = self.cli_mpc.call_async(req)
+            future.add_done_callback(self.callback_done)
 
     def callback_done(self, future):
         try:
@@ -94,11 +81,6 @@ class App:
         self.notebook.add(self.frame_mpc, text="MPC Controller")
         self.setup_mpc_tab()
 
-        # 탭 2: Frenet Planner
-        self.frame_frenet = ttk.Frame(self.notebook)
-        self.notebook.add(self.frame_frenet, text="Frenet Planner")
-        self.setup_frenet_tab()
-
     def load_yaml_params(self):
         """패키지 내의 config/mpc_params.yaml 파일을 읽어옵니다."""
         try:
@@ -115,12 +97,6 @@ class App:
                     # MPC 파라미터 파싱
                     if "mpc_path_tracker" in data:
                         self.mpc_params = data["mpc_path_tracker"].get(
-                            "ros__parameters", {}
-                        )
-
-                    # Frenet 파라미터 파싱
-                    if "frenet_planner" in data:
-                        self.frenet_params = data["frenet_planner"].get(
                             "ros__parameters", {}
                         )
             else:
@@ -234,129 +210,6 @@ class App:
         # YAML 값 적용
         mpc_configs = self.apply_yaml_init(mpc_configs, self.mpc_params)
         self.create_controls(self.frame_mpc, mpc_configs, "mpc")
-
-    def setup_frenet_tab(self):
-        # 1. Cool Start 버튼 (상단 배치)
-        btn_frame = tk.Frame(self.frame_frenet, pady=10, bg="#ffcccc")
-        btn_frame.pack(fill="x", side="top")
-
-        btn_reset = tk.Button(
-            btn_frame,
-            text="🔥 COOL START (RESET STATE) 🔥",
-            command=self.trigger_reset,
-            bg="red",
-            fg="white",
-            font=("Arial", 12, "bold"),
-        )
-        btn_reset.pack(pady=5, padx=20, fill="x")
-
-        # 2. 파라미터 리스트
-        frenet_configs = [
-            {
-                "name": "target_speed",
-                "min": 0.0,
-                "max": 5.0,
-                "init": 1.0,
-                "res": 0.1,
-                "type": float,
-            },
-            {
-                "name": "boost_speed",
-                "min": 0.0,
-                "max": 5.0,
-                "init": 1.5,
-                "res": 0.1,
-                "type": float,
-            },
-            {
-                "name": "base_lookahead",
-                "min": 0.1,
-                "max": 3.0,
-                "init": 0.6,
-                "res": 0.1,
-                "type": float,
-            },
-            {
-                "name": "max_lookahead",
-                "min": 0.5,
-                "max": 5.0,
-                "init": 1.2,
-                "res": 0.1,
-                "type": float,
-            },
-            {
-                "name": "weight_heading",
-                "min": 0.0,
-                "max": 2.0,
-                "init": 0.7,
-                "res": 0.1,
-                "type": float,
-            },
-            {
-                "name": "weight_path",
-                "min": 0.0,
-                "max": 2.0,
-                "init": 0.3,
-                "res": 0.1,
-                "type": float,
-            },
-            {
-                "name": "error_gain",
-                "min": 0.0,
-                "max": 1.0,
-                "init": 0.2,
-                "res": 0.05,
-                "type": float,
-            },
-            {
-                "name": "steer_alpha",
-                "min": 0.0,
-                "max": 1.0,
-                "init": 0.1,
-                "res": 0.05,
-                "type": float,
-            },
-            {
-                "name": "static_margin_front",
-                "min": 0.0,
-                "max": 5.0,
-                "init": 0.7,
-                "res": 0.1,
-                "type": float,
-            },
-            {
-                "name": "static_margin_rear",
-                "min": 0.0,
-                "max": 5.0,
-                "init": 0.3,
-                "res": 0.1,
-                "type": float,
-            },
-            {
-                "name": "predict_time",
-                "min": 0.1,
-                "max": 5.0,
-                "init": 1.0,
-                "res": 0.1,
-                "type": float,
-            },
-            {
-                "name": "predict_step",
-                "min": 0.05,
-                "max": 1.0,
-                "init": 0.2,
-                "res": 0.05,
-                "type": float,
-            },
-        ]
-        # YAML 값 적용
-        frenet_configs = self.apply_yaml_init(frenet_configs, self.frenet_params)
-        self.create_controls(self.frame_frenet, frenet_configs, "frenet")
-
-    def trigger_reset(self):
-        # Frenet Node에 reset_trigger = True를 보냄
-        self.node.send_parameter("frenet", "reset_trigger", True, bool)
-        print(">>> Reset Trigger Sent!")
 
     def create_controls(self, parent_frame, configs, target_node_name):
         canvas = tk.Canvas(parent_frame)
