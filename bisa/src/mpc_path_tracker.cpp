@@ -51,6 +51,10 @@ namespace bisa
             rclcpp::SensorDataQoS(),
             std::bind(&MPCPathTrackerCpp::pose_callback, this, std::placeholders::_1));
 
+        target_vel_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+            "/planning/target_v", 10,
+            std::bind(&MPCPathTrackerCpp::target_vel_callback, this, std::placeholders::_1));
+
         accel_pub_ = this->create_publisher<geometry_msgs::msg::Accel>("/Accel", 10);
         pred_pub_ = this->create_publisher<nav_msgs::msg::Path>("/mpc_predicted_path", 10);
 
@@ -114,11 +118,28 @@ namespace bisa
     {
         current_pose_ = msg->pose;
     }
+    void MPCPathTrackerCpp::target_vel_callback(const std_msgs::msg::Float32::SharedPtr msg)
+    {
+        current_target_vel_ = msg->data;
+    }
 
     void MPCPathTrackerCpp::control_loop()
     {
         if (local_path_.empty() || !current_pose_)
             return;
+
+        // [핵심 수정] 수신된 목표 속도를 MPC 파라미터에 반영
+        // Planner가 0을 보내면 MPC도 즉시 0을 목표로 함 (단, 급정거 방지는 MPC 내부 로직에 맡김)
+        MPCParams current_params = controller_->get_parameters(); // getter 필요 (없으면 params_ 접근)
+
+        // YAML 설정값(상한선)과 Planner 명령값 중 작은 것을 선택
+        double yaml_max_vel = this->get_parameter("max_velocity").as_double();
+        current_params.max_velocity = std::min(yaml_max_vel, current_target_vel_);
+
+        // 컨트롤러에 업데이트된 파라미터 적용 (매 루프마다 적용)
+        controller_->update_parameters(current_params);
+
+        // 경로가 너무 짧으면 정지
         if (local_path_.size() < 2)
         {
             publish_control(0.0, 0.0);
@@ -126,7 +147,6 @@ namespace bisa
         }
 
         auto output = controller_->compute_control(*current_pose_, local_path_);
-
         publish_control(output.velocity, output.angular_velocity);
         publish_predicted_path(output.predicted_trajectory);
 

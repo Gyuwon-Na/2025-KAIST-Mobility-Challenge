@@ -49,6 +49,7 @@ namespace bisa
         ControlOutput compute_control(
             const geometry_msgs::msg::Pose &current_pose,
             const std::vector<geometry_msgs::msg::PoseStamped> &local_path);
+        inline MPCParams get_parameters() const { return params_; }
 
     private:
         MPCParams params_;

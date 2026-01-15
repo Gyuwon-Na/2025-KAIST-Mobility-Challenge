@@ -65,9 +65,6 @@ target_link_libraries(mpc_path_tracker mpc_controller_lib)
 add_executable(visualize_hvs src/visualize_hvs.cpp)
 ament_target_dependencies(visualize_hvs rclcpp geometry_msgs visualization_msgs)
 
-add_executable(frenet_planner src/frenet_planner.cpp)
-ament_target_dependencies(frenet_planner rclcpp geometry_msgs tf2 tf2_geometry_msgs nav_msgs visualization_msgs)
-
 install(TARGETS
   mpc_controller_lib
   LIBRARY DESTINATION lib
@@ -77,7 +74,6 @@ install(TARGETS
   local_path_pub
   mpc_path_tracker
   visualize_hvs
-  frenet_planner
   DESTINATION lib/${PROJECT_NAME}
 )
 

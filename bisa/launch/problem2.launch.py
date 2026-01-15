@@ -52,15 +52,6 @@ def generate_launch_description():
                     {"target_problem": LaunchConfiguration("problem")},
                 ],
             ),
-            # Node(
-            #     package="bisa",
-            #     executable="frenet_planner",
-            #     name="frenet_planner",
-            #     output="screen",
-            #     parameters=[param_config],
-            # ),
-            # 3. Local Path Publisher
-            # 3. Local Path Publisher
             Node(
                 package="bisa",
                 executable="local_path_pub",
