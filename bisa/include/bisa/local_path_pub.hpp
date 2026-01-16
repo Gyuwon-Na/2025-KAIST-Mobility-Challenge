@@ -168,7 +168,7 @@ namespace bisa
         // Lane parameters
         static constexpr double LANE_WIDTH = 0.25;
         static constexpr double LANE_THRESHOLD = 0.20;
-        static constexpr double MERGE_THRESHOLD = 0.15; // Merge zone detection
+        static constexpr double MERGE_THRESHOLD = 0.2; // Merge zone detection
 
         // Speed parameters
         static constexpr double CRUISE_SPEED = 1.5;

@@ -121,7 +121,7 @@ class App:
             {
                 "name": "horizon",
                 "min": 5,
-                "max": 100,
+                "max": 180,
                 "init": 50,
                 "res": 1,
                 "type": int,
@@ -155,7 +155,7 @@ class App:
                 "min": 0.0,
                 "max": 100.0,
                 "init": 20.0,
-                "res": 0.5,
+                "res": 0.1,
                 "type": float,
             },
             {
@@ -163,13 +163,13 @@ class App:
                 "min": 0.0,
                 "max": 100.0,
                 "init": 28.0,
-                "res": 0.5,
+                "res": 0.1,
                 "type": float,
             },
             {
                 "name": "R_v",
                 "min": 0.0,
-                "max": 10.0,
+                "max": 40.0,
                 "init": 0.3,
                 "res": 0.1,
                 "type": float,
@@ -177,7 +177,7 @@ class App:
             {
                 "name": "R_w",
                 "min": 0.0,
-                "max": 10.0,
+                "max": 40.0,
                 "init": 0.3,
                 "res": 0.1,
                 "type": float,
