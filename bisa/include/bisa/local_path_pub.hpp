@@ -78,6 +78,26 @@ namespace bisa
         const double SAFE_MERGE_GAP = 0.8;  // 안전 합류 gap (m)
         const double MERGE_LOOKAHEAD = 3.0; // 합류 지점 전후 탐색 범위 (m)
 
+        // 차량 크기
+        const double VEH_F = 0.17;  // Ego 앞범퍼까지
+        const double VEH_R = 0.16;  // Ego 뒷범퍼까지
+        const double VEH_W = 0.075; // Ego 측면까지
+
+        // 상대 차량도 비슷한 크기라 가정
+        const double OBS_F = 0.17;
+        const double OBS_R = 0.16;
+        const double OBS_W = 0.075;
+
+        // 안전 마진 (범퍼 간 최소 거리)
+        const double MARGIN_FRONT = 0.5;
+        const double MARGIN_REAR = 0.4;
+        const double MARGIN_LATERAL = 0.15;
+
+        // 직사각형 크기 = 내 차량 + 상대 차량 + 마진
+        const double SAFE_FRONT = VEH_F + OBS_R + MARGIN_FRONT;     // 0.17 + 0.16 + 0.25 = 0.58m
+        const double SAFE_REAR = VEH_R + OBS_F + MARGIN_REAR;       // 0.16 + 0.17 + 0.20 = 0.53m
+        const double SAFE_LATERAL = VEH_W + OBS_W + MARGIN_LATERAL; // 0.075 + 0.075 + 0.15 = 0.25m
+
         // ========================================================================
         // CORE FUNCTIONS
         // ========================================================================
@@ -91,6 +111,7 @@ namespace bisa
         // Zone 판별
         bool in_merge_zone(int idx);
         bool in_merge_gate(int idx);
+        bool in_split_gate(int idx);
 
         // 합류 Gap 분석
         MergeGapInfo analyze_merge_gap();
