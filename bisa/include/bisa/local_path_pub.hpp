@@ -48,6 +48,17 @@ namespace bisa
         double last_seen_sec = 0.0;
     };
 
+    struct MergeGapInfo
+    {
+        bool gap_available = false;
+        double front_dist = 999.0;    // 합류 지점 기준 앞차까지 거리
+        double rear_dist = 999.0;     // 합류 지점 기준 뒷차까지 거리
+        double front_vel = 0.0;       // 앞차 속도
+        double rear_vel = 0.0;        // 뒷차 속도
+        double gap_size = 0.0;        // gap 크기
+        double recommended_vel = 1.5; // 권장 합류 속도
+    };
+
     class LocalPathPubCpp : public rclcpp::Node
     {
     public:
@@ -60,7 +71,12 @@ namespace bisa
         // ========================================================================
         const int FIXED_MERGE_IDX = 1500;
         const int FIXED_SPLIT_IDX = 2281;
-        const int MERGE_ZONE_THRESHOLD = 40; // +/- 40점 이내는 합류/분기 구간으로 간주
+        const int MERGE_ZONE_THRESHOLD = 100; // +/- 40점 이내는 합류/분기 구간으로 간주
+
+        // Merge Zone parameters
+        const double MIN_MERGE_GAP = 0.5;   // 최소 합류 gap (m)
+        const double SAFE_MERGE_GAP = 0.8;  // 안전 합류 gap (m)
+        const double MERGE_LOOKAHEAD = 3.0; // 합류 지점 전후 탐색 범위 (m)
 
         // ========================================================================
         // CORE FUNCTIONS
@@ -76,8 +92,13 @@ namespace bisa
         bool in_merge_zone(int idx);
         bool in_merge_gate(int idx);
 
+        // 합류 Gap 분석
+        MergeGapInfo analyze_merge_gap();
+
+        // Lap Info
         int count_lap_idx(int lane_idx, double x, double y);
         void publish_lap_info();
+
         // ========================================================================
         // CALLBACKS & LOOPS
         // ========================================================================
