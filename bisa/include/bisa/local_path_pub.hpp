@@ -139,7 +139,6 @@ namespace bisa
 
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_local_path_;
         rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_target_vel_;
-        rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_debug_; // 디버그용
         rclcpp::Publisher<bisa::msg::LapInfo>::SharedPtr pub_lap_info_;
 
         rclcpp::TimerBase::SharedPtr timer_;

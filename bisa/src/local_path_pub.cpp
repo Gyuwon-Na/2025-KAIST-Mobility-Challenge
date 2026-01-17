@@ -49,7 +49,6 @@ namespace bisa
         // Publishers
         pub_local_path_ = this->create_publisher<nav_msgs::msg::Path>("/local_path", 10);
         pub_target_vel_ = this->create_publisher<std_msgs::msg::Float32>("/planning/target_v", 10);
-        pub_debug_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/debug/merge_zone", 10);
         pub_lap_info_ = this->create_publisher<bisa::msg::LapInfo>("/lap_information", 10);
 
         // Timer
@@ -602,41 +601,6 @@ namespace bisa
         pub_target_vel_->publish(v_msg);
 
         publish_lap_info();
-        // --------------------------------------------------------------------
-        // Visualization (시각화)
-        // 고정 포인트 표시 (제대로 작동하는지 눈으로 확인용)
-        // --------------------------------------------------------------------
-        visualization_msgs::msg::MarkerArray markers;
-        auto now = this->now();
-
-        // Merge (Red)
-        visualization_msgs::msg::Marker m1;
-        m1.header.frame_id = "world";
-        m1.header.stamp = now;
-        m1.id = 0;
-        m1.type = visualization_msgs::msg::Marker::SPHERE;
-        m1.action = visualization_msgs::msg::Marker::ADD;
-        m1.pose.position.x = lane3[FIXED_MERGE_IDX].x;
-        m1.pose.position.y = lane3[FIXED_MERGE_IDX].y;
-        m1.pose.position.z = 0.5;
-        m1.scale.x = 1.0;
-        m1.scale.y = 1.0;
-        m1.scale.z = 1.0;
-        m1.color.r = 1.0;
-        m1.color.a = 0.6;
-        markers.markers.push_back(m1);
-
-        // Split (Blue)
-        visualization_msgs::msg::Marker m2;
-        m2 = m1;
-        m2.id = 1;
-        m2.pose.position.x = lane3[FIXED_SPLIT_IDX].x;
-        m2.pose.position.y = lane3[FIXED_SPLIT_IDX].y;
-        m2.color.r = 0.0;
-        m2.color.b = 1.0;
-        markers.markers.push_back(m2);
-
-        pub_debug_->publish(markers);
     }
 
     // ========================================================================
