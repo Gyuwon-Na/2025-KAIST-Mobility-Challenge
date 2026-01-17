@@ -1,6 +1,6 @@
 mpc_path_tracker:
   ros__parameters:
-    # --- MPC 설정 ---
+      # --- MPC 설정 ---
     horizon: 64
     dt: 0.01
     lookahead_base: 0.8
