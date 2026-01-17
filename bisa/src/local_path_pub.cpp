@@ -10,10 +10,6 @@
 
 namespace bisa
 {
-    // [핵심] 절대 변하지 않는 고정 좌표 인덱스 (일관성 보장)
-    static const int FIXED_MERGE_IDX = 1500;
-    static const int FIXED_SPLIT_IDX = 2281;
-
     LocalPathPubCpp::LocalPathPubCpp() : Node("local_path_pub")
     {
         RCLCPP_INFO(this->get_logger(), "============================================");
@@ -153,22 +149,9 @@ namespace bisa
         return LaneID::NONE;
     }
 
-    // [핵심 변경] Zone 기반 안전성 체크 (방향 무관, 위치만 봄)
-    bool LocalPathPubCpp::check_zone_safety(double center_x, double center_y, double radius, LaneID target_lane)
+    bool LocalPathPubCpp::in_merge_gate(int idx)
     {
-        for (auto const &[id, obs] : obstacles_)
-        {
-            if (obs.lane != target_lane)
-                continue;
-
-            // 해당 구역(반경 radius) 안에 차가 들어오면 무조건 위험
-            double d = get_dist(center_x, center_y, obs.x, obs.y);
-            if (d < radius)
-            {
-                return false; // UNSAFE
-            }
-        }
-        return true; // SAFE
+        return (idx >= FIXED_MERGE_IDX - MERGE_ZONE_THRESHOLD && idx < FIXED_MERGE_IDX) || (idx > FIXED_SPLIT_IDX && idx <= FIXED_SPLIT_IDX + MERGE_ZONE_THRESHOLD);
     }
 
     bool LocalPathPubCpp::in_merge_zone(int idx)
@@ -186,6 +169,10 @@ namespace bisa
         if (processed_lanes_[2].empty())
             return;
 
+        // --------------------------------------------------------------------
+        // Determine Velocity (안전성 + 속도 결정)
+        // 속도 발행하기 전 경우에 따라 나눠서 처리
+        // --------------------------------------------------------------------
         // 1. 현재 위치 찾기 (사용자님 로직 사용)
         LaneID current_lane_id = get_lane_at(ego_x_, ego_y_);
 
@@ -210,6 +197,8 @@ namespace bisa
         // 3. 전방 장애물 거리 탐색 (내 차선 기준)
         double min_dist_ahead = 999.0;
         bool obj_found = false;
+        bool is_in_merge_zone_ = in_merge_zone(ego_idx);
+        bool is_in_merge_gate_ = in_merge_gate(ego_idx);
 
         for (auto const &[id, obs] : obstacles_)
         {
@@ -221,7 +210,7 @@ namespace bisa
             // 로컬 좌표계 변환 (전방 거리)
             double local_x = dx * std::cos(ego_yaw_) + dy * std::sin(ego_yaw_);
 
-            // 전방 0.0m ~ 20m 탐색
+            // 전방 0.0m ~ 2.0m 탐색
             if (local_x > 0.0 && local_x < 2.0)
             {
                 double dist = std::hypot(dx, dy);
@@ -255,31 +244,49 @@ namespace bisa
             {
                 // [Case 2] 장애물이 있지만 멀리 있음 (1.0m 이상)
                 // [Case 2-1] 합류 구간이 아닐 때만 2.0으로 증속
-                if (!in_merge_zone(ego_idx))
+                if (!is_in_merge_zone_ && !is_in_merge_gate_)
                 {
                     target_vel = 2.0;
                 }
 
-                // [Case 2-2] 합류 구간이면??
+                // [Case 2-2] 합류 게이트 구간이면??  (= 합류할 시점 (merge index - 10 ~ merge index))
+                if (is_in_merge_gate_ && !is_in_merge_zone_)
+                {
+                }
+
+                // [Case 2-3] 합류 구간이면??
+                if (is_in_merge_zone_)
+                {
+                    // 합류했는데 장애물 있으면 상관 없지 않나? 이 때는 그냥 차선 그룹의 속도랑 유지하면 되지 않나?
+                }
             }
         }
         else
         {
             // [Case 3] 장애물 없음
             // [Case 3-1] 합류 구간이 아닐 때만 2.0으로 증속
-            if (!in_merge_zone(ego_idx))
+            if (!is_in_merge_zone_ && !is_in_merge_gate_)
             {
                 target_vel = 2.0;
             }
 
-            // [Case 3-2] 합류 구간이면??
+            // [Case 3-2] 합류 게이트 구간이면?? (= 분기할 시점 (split index ~ split index + 10))
+            if (is_in_merge_gate_ && !is_in_merge_zone_)
+            {
+            }
+
+            // [Case 3-3] 합류 구간이면??
+            if (is_in_merge_zone_)
+            {
+                // Case 2-2이랑 겹치는 경우 아닌가? 중복된 경우인 거 같은데..
+            }
         }
 
         const auto &lane3 = processed_lanes_[2];
         int path_size = lane3.size();
 
         // --------------------------------------------------------------------
-        // [FIX] Path Generation (최소 길이 보장)
+        // Path Generation (최소 길이 보장)
         // 속도가 줄어도 경로가 너무 짧아지지 않도록 최소 50개 점은 무조건 생성
         // --------------------------------------------------------------------
         nav_msgs::msg::Path local_path_msg;
@@ -311,7 +318,10 @@ namespace bisa
         v_msg.data = target_vel;
         pub_target_vel_->publish(v_msg);
 
-        // [시각화] 고정 포인트 표시 (제대로 작동하는지 눈으로 확인용)
+        // --------------------------------------------------------------------
+        // Visualization (시각화)
+        // 고정 포인트 표시 (제대로 작동하는지 눈으로 확인용)
+        // --------------------------------------------------------------------
         visualization_msgs::msg::MarkerArray markers;
         auto now = this->now();
 

@@ -18,6 +18,8 @@
 #include <cmath>
 #include <string>
 
+#include "bisa/msg/lap_info.hpp"
+
 namespace bisa
 {
 
@@ -54,27 +56,32 @@ namespace bisa
 
     private:
         // ========================================================================
+        // CORE VARIABLES
+        // ========================================================================
+        const int FIXED_MERGE_IDX = 1500;
+        const int FIXED_SPLIT_IDX = 2281;
+        const int MERGE_ZONE_THRESHOLD = 40; // +/- 40점 이내는 합류/분기 구간으로 간주
+
+        // ========================================================================
         // CORE FUNCTIONS
         // ========================================================================
-
-        // 사용자님이 원하신 기존 추종 로직 (그대로 유지)
         int find_closest_idx_forward(int lane_idx, double x, double y);
-
-        // [변경] 위치 기반 안전성 체크 (가장 확실함)
-        bool check_zone_safety(double center_x, double center_y, double radius, LaneID target_lane);
 
         // Lane 판별
         LaneID get_lane_at(double x, double y);
         double get_dist(double x1, double y1, double x2, double y2);
         double normalize_angle(double angle);
 
+        // Zone 판별
         bool in_merge_zone(int idx);
+        bool in_merge_gate(int idx);
 
         // ========================================================================
         // CALLBACKS & LOOPS
         // ========================================================================
         void control_loop();
         void process_lane_path(int lane_idx);
+        void publish_lap_info();
         void obstacle_callback(const visualization_msgs::msg::MarkerArray::SharedPtr msg);
         void pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
 
@@ -90,6 +97,7 @@ namespace bisa
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_local_path_;
         rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_target_vel_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_debug_; // 디버그용
+        rclcpp::Publisher<bisa::msg::LapInfo>::SharedPtr lap_info_pub_;
 
         rclcpp::TimerBase::SharedPtr timer_;
 
@@ -107,6 +115,12 @@ namespace bisa
         int last_closest_idx_ = -1;
         double env_slow_vel_ = 0.0;
         double env_fast_vel_ = 0.0;
+
+        // Lap Info Variables
+        int lap_count_ = 0;
+        double total_distance_ = 0.0;
+        rclcpp::Time lap_start_time_;
+        // int prev_track_idx_ = 0; // Lane 2 기준 이전 인덱스
     };
 
 } // namespace bisa
