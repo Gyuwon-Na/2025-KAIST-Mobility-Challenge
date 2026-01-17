@@ -40,10 +40,20 @@ namespace bisa
         sub_pose_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
             "/Ego_pose", rclcpp::SensorDataQoS(), std::bind(&LocalPathPubCpp::pose_callback, this, std::placeholders::_1));
 
+        sub_env_slow_ = this->create_subscription<std_msgs::msg::Float32>(
+            "/env/slow_vel", 10,
+            [this](const std_msgs::msg::Float32::SharedPtr msg)
+            { env_slow_vel_ = msg->data; });
+
+        sub_env_fast_ = this->create_subscription<std_msgs::msg::Float32>(
+            "/env/fast_vel", 10,
+            [this](const std_msgs::msg::Float32::SharedPtr msg)
+            { env_fast_vel_ = msg->data; });
+
         // Publishers
         pub_local_path_ = this->create_publisher<nav_msgs::msg::Path>("/local_path", 10);
         pub_target_vel_ = this->create_publisher<std_msgs::msg::Float32>("/planning/target_v", 10);
-        pub_debug_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/debug/safety_zones", 10);
+        pub_debug_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/debug/merge_zone", 10);
 
         // Timer
         timer_ = this->create_wall_timer(std::chrono::milliseconds(20), std::bind(&LocalPathPubCpp::control_loop, this));
@@ -172,53 +182,29 @@ namespace bisa
             return;
 
         // 1. 현재 위치 찾기 (사용자님 로직 사용)
+        LaneID current_lane_id = get_lane_at(ego_x_, ego_y_);
+
+        if (current_lane_id == LaneID::NONE || current_lane_id == LaneID::LANE_1)
+        {
+            current_lane_id = LaneID::LANE_3;
+        }
+
         int ego_idx = find_closest_idx_forward(2, ego_x_, ego_y_);
         double target_vel = 2.0;
 
+        if (current_lane_id == LaneID::LANE_2)
+        {
+            // Lane 2: Slow Velocity 사용
+            target_vel = (env_slow_vel_ > 0.1) ? env_slow_vel_ : 1.5; // 값 안오면 1.5
+        }
+        else
+        {
+            // Lane 3: Fast Velocity 사용
+            target_vel = (env_fast_vel_ > 0.1) ? env_fast_vel_ : 2.0; // 값 안오면 2.0
+        }
+
         const auto &lane3 = processed_lanes_[2];
         int path_size = lane3.size();
-
-        // --------------------------------------------------------------------
-        // [FIX] 일관된 합류/분기 안전 로직 (고정 인덱스 + Zone Check)
-        // --------------------------------------------------------------------
-
-        // (1) 합류 구간 안전 체크
-        double d_to_merge = get_dist(ego_x_, ego_y_, lane3[FIXED_MERGE_IDX].x, lane3[FIXED_MERGE_IDX].y);
-
-        // 합류점 전방 15m ~ 1m 사이일 때 검사
-        if (d_to_merge < 15.0 && d_to_merge > 1.0)
-        {
-            // 내적: 내가 아직 합류점 뒤에 있는가? (지나갔으면 검사 안 함)
-            double vx = lane3[FIXED_MERGE_IDX].x - ego_x_;
-            double vy = lane3[FIXED_MERGE_IDX].y - ego_y_;
-            if ((vx * std::cos(ego_yaw_) + vy * std::sin(ego_yaw_)) > 0)
-            {
-                // 합류점 반경 6m 내에 Lane 2 차량이 있는가?
-                if (!check_zone_safety(lane3[FIXED_MERGE_IDX].x, lane3[FIXED_MERGE_IDX].y, 6.0, LaneID::LANE_2))
-                {
-                    target_vel = 0.0;
-                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500, "WAITING FOR MERGE (Zone Check)");
-                }
-            }
-        }
-
-        // (2) 분기 구간 안전 체크
-        double d_to_split = get_dist(ego_x_, ego_y_, lane3[FIXED_SPLIT_IDX].x, lane3[FIXED_SPLIT_IDX].y);
-
-        if (d_to_split < 15.0 && d_to_split > 1.0)
-        {
-            double vx = lane3[FIXED_SPLIT_IDX].x - ego_x_;
-            double vy = lane3[FIXED_SPLIT_IDX].y - ego_y_;
-            if ((vx * std::cos(ego_yaw_) + vy * std::sin(ego_yaw_)) > 0)
-            {
-                // 분기점 반경 6m 내에 Lane 3 차량이 있는가? (나가는 길 막힘?)
-                if (!check_zone_safety(lane3[FIXED_SPLIT_IDX].x, lane3[FIXED_SPLIT_IDX].y, 6.0, LaneID::LANE_3))
-                {
-                    target_vel = 0.0;
-                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500, "WAITING FOR SPLIT (Zone Check)");
-                }
-            }
-        }
 
         // --------------------------------------------------------------------
         // [FIX] Path Generation (최소 길이 보장)

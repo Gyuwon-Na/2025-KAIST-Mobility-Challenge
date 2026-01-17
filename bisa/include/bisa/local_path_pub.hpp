@@ -82,6 +82,8 @@ namespace bisa
         rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub_lane_[3];
         rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr sub_obs_;
         rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_pose_;
+        rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr sub_env_slow_;
+        rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr sub_env_fast_;
 
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_local_path_;
         rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_target_vel_;
@@ -101,6 +103,8 @@ namespace bisa
 
         // Index tracking
         int last_closest_idx_ = -1;
+        double env_slow_vel_ = 0.0;
+        double env_fast_vel_ = 0.0;
     };
 
 } // namespace bisa

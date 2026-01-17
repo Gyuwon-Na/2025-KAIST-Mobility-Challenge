@@ -120,15 +120,29 @@ namespace bisa
         double path_curvature = calculate_path_curvature(targets, lookahead_idx);
         double curvature_magnitude = std::abs(path_curvature);
 
+        /* ================================================================================== */
         // Q_pos effect
         double position_weight_factor = std::clamp(params_.Q_pos / 20.0, 0.5, 2.0);
-        double curvature_penalty = 1.0 / (1.0 + curvature_magnitude * 10.0 * position_weight_factor);
+
+        // [수정 전] 계수가 10.0으로 너무 큼 (조금만 휘어도 속도 확 줄어듦)
+        // double curvature_penalty = 1.0 / (1.0 + curvature_magnitude * 10.0 * position_weight_factor);
+
+        // [수정 후] 계수를 2.0 정도로 대폭 낮춤 -> 코너에서도 속도 유지
+        double curvature_penalty = 1.0 / (1.0 + curvature_magnitude * 2.0 * position_weight_factor);
 
         // Q_heading effect
         double heading_weight_factor = std::clamp(params_.Q_heading / 12.0, 0.5, 2.0);
-        double heading_penalty = 1.0 / (1.0 + std::abs(heading_error) * 5.0 * heading_weight_factor);
 
+        // [수정 전] 방향이 조금만 틀어져도 감속함 (5.0)
+        // double heading_penalty = 1.0 / (1.0 + std::abs(heading_error) * 5.0 * heading_weight_factor);
+
+        // [수정 후] 방향 오차에 의한 감속도 완화 (1.0)
+        double heading_penalty = 1.0 / (1.0 + std::abs(heading_error) * 1.0 * heading_weight_factor);
+
+        // 최종 목표 속도 계산 (이 값이 커져야 코너에서 빠름)
         double v_target = params_.max_velocity * curvature_penalty * heading_penalty;
+
+        /* ================================================================================== */
 
         // R_v effect (velocity smoothness)
         double v_smoothing = std::clamp(params_.R_v * 2.0, 1.0, 10.0);

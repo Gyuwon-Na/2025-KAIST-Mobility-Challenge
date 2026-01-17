@@ -53,7 +53,8 @@ void ObstacleRelay::update_dynamic_threshold()
     {
         if ((this->now().seconds() - data.time) > 1.0)
             continue;
-        // 0.1(최소) ~ 3.0(최대) 사이의 유효한 속도만 수집
+
+        // 유효 속도 수집 (정지 차량 제외)
         if (data.vel > vel_static_thres_ && data.vel < 3.0)
         {
             moving_speeds.push_back(data.vel);
@@ -63,23 +64,41 @@ void ObstacleRelay::update_dynamic_threshold()
     if (moving_speeds.size() < 2)
         return;
 
+    // 2. 정렬 (Gap을 찾기 위해 필수)
     std::sort(moving_speeds.begin(), moving_speeds.end());
-    double min_v = moving_speeds.front();
-    double max_v = moving_speeds.back();
 
-    // [범용성 핵심]
-    // 특정 숫자가 아니라 "두 그룹으로 나눌 수 있는가?"만 봅니다.
-    // 0.3 vs 0.5 상황에서도 차이는 0.2이므로 0.15보다 큽니다. (작동 O)
-    // 0.7 vs 1.0 상황에서도 차이는 0.3이므로 0.15보다 큽니다. (작동 O)
-    if ((max_v - min_v) >= 0.15)
+    // [핵심 변경 1] Max Gap 방식 도입
+    // 단순히 최대/최소의 중간값이 아니라, 데이터들이 "가장 멀리 떨어져 있는 구간"을 찾습니다.
+    // 예: [0.5, 0.55, 0.6] ... (gap 0.4) ... [1.0, 1.05]
+    // 이러면 0.1 차이라도 그룹이 명확하면 잡아냅니다.
+
+    double max_gap = 0.0;
+    double split_value = 0.0;
+    int split_index = -1;
+
+    for (size_t i = 0; i < moving_speeds.size() - 1; ++i)
     {
-        double mid_ref = (min_v + max_v) / 2.0;
+        double gap = moving_speeds[i + 1] - moving_speeds[i];
+        if (gap > max_gap)
+        {
+            max_gap = gap;
+            // 틈의 중간지점을 임시 기준선으로 잡음
+            split_value = (moving_speeds[i] + moving_speeds[i + 1]) / 2.0;
+            split_index = i;
+        }
+    }
+
+    // [핵심 변경 2] 최소 구분 기준 완화 (0.15 -> 0.08)
+    // 0.1m/s 차이도 구분하려면 갭 기준을 0.08 정도로 낮춰야 합니다.
+    if (max_gap >= 0.05)
+    {
         double sum_slow = 0.0, cnt_slow = 0.0;
         double sum_fast = 0.0, cnt_fast = 0.0;
 
+        // Gap을 기준으로 그룹 분류
         for (double v : moving_speeds)
         {
-            if (v < mid_ref)
+            if (v < split_value)
             {
                 sum_slow += v;
                 cnt_slow++;
@@ -91,38 +110,29 @@ void ObstacleRelay::update_dynamic_threshold()
             }
         }
 
-        // 두 그룹이 모두 존재할 때만 기준값을 업데이트합니다.
-        // (한 그룹만 있을 때는 이전 기준값을 유지하는 것이 가장 안전함)
         if (cnt_slow > 0 && cnt_fast > 0)
         {
             double avg_slow = sum_slow / cnt_slow;
             double avg_fast = sum_fast / cnt_fast;
 
+            // 멤버 변수 업데이트 (이전에 누락되었던 부분)
             this->slow_vel = avg_slow;
             this->fast_vel = avg_fast;
 
             double new_threshold = (avg_slow + avg_fast) / 2.0;
 
-            // [안전장치] 기준값이 너무 터무니없이 튀지 않도록 Clamp
-            // RC카 범위를 고려해 0.2 ~ 1.5 사이로 제한
+            // Clamp (RC카 스케일 유지)
             if (new_threshold < 0.2)
                 new_threshold = 0.2;
             if (new_threshold > 1.5)
                 new_threshold = 1.5;
 
-            // Soft Update (천천히 반영)
-            vel_slow_thres_ = (vel_slow_thres_ * 0.9) + (new_threshold * 0.1);
-
-            // 디버그 출력 (1초에 1번 제한)
-            // RCLCPP_WARN_THROTTLE(
-            //     this->get_logger(),
-            //     *this->get_clock(),
-            //     1000,
-            //     "FAST/SLOW SPLIT → slow_avg=%.2f m/s, fast_avg=%.2f m/s, thres=%.2f",
-            //     avg_slow, avg_fast, new_threshold);
+            // [핵심 변경 3] 반응 속도 향상 (0.1 -> 0.4)
+            // 기존 0.1은 너무 느려서 0.15 차이가 나도 반영되는데 수 초가 걸립니다.
+            // 0.4로 올리면 변화가 훨씬 빠르게 반영됩니다.
+            vel_slow_thres_ = (vel_slow_thres_ * 0.6) + (new_threshold * 0.4);
         }
     }
-    // else 블록 제거: 한 그룹만 있을 때는 섣불리 판단하지 않고 기존 기준 유지
 }
 
 void ObstacleRelay::ego_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)

@@ -7,10 +7,11 @@ Panels:
         - /Global Options1
         - /Status1
         - /MarkerArray1
-        - /Marker1
+        - /MarkerArray2
         - /MarkerArray3
+        - /Path1
         - /MarkerArray4
-        - /MarkerArray5
+        - /MarkerArray4/Namespaces1
       Splitter Ratio: 0.5
     Tree Height: 464
   - Class: rviz_common/Selection
@@ -71,18 +72,6 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /obstacles_markers
       Value: true
-    - Class: rviz_default_plugins/Marker
-      Enabled: true
-      Name: Marker
-      Namespaces:
-        {}
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /car_marker
-      Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: false
       Name: MarkerArray
@@ -95,41 +84,44 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /hdmap/lane_markers
       Value: false
-    - Class: rviz_default_plugins/MarkerArray
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 25; 255; 0
       Enabled: true
-      Name: MarkerArray
-      Namespaces:
-        {}
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: Path
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /planning/lookahead_point_array
+        Value: /user_global_path
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        {}
+        "": true
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /planning/safety_zones
-      Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: MarkerArray
-      Namespaces:
-        {}
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /planning/debug_markers
+        Value: /debug/safety_zones
       Value: true
   Enabled: true
   Global Options:
@@ -174,25 +166,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 7.2968902587890625
+      Distance: 12.265630722045898
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 1.4336192607879639
-        Y: 0.41374915838241577
-        Z: 0.04446445778012276
+        X: 2.6290791034698486
+        Y: -1.3914364576339722
+        Z: 0.04264599829912186
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.324796438217163
+      Pitch: 1.5697963237762451
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 4.753576755523682
+      Yaw: 4.723576068878174
     Saved: ~
 Window Geometry:
   Displays:
@@ -208,5 +200,5 @@ Window Geometry:
   Views:
     collapsed: true
   Width: 1354
-  X: 997
-  Y: 341
+  X: 965
+  Y: 309
