@@ -76,12 +76,13 @@ namespace bisa
         bool in_merge_zone(int idx);
         bool in_merge_gate(int idx);
 
+        int count_lap_idx(int lane_idx, double x, double y);
+        void publish_lap_info();
         // ========================================================================
         // CALLBACKS & LOOPS
         // ========================================================================
         void control_loop();
         void process_lane_path(int lane_idx);
-        void publish_lap_info();
         void obstacle_callback(const visualization_msgs::msg::MarkerArray::SharedPtr msg);
         void pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
 
@@ -97,7 +98,7 @@ namespace bisa
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_local_path_;
         rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_target_vel_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_debug_; // 디버그용
-        rclcpp::Publisher<bisa::msg::LapInfo>::SharedPtr lap_info_pub_;
+        rclcpp::Publisher<bisa::msg::LapInfo>::SharedPtr pub_lap_info_;
 
         rclcpp::TimerBase::SharedPtr timer_;
 
@@ -120,7 +121,7 @@ namespace bisa
         int lap_count_ = 0;
         double total_distance_ = 0.0;
         rclcpp::Time lap_start_time_;
-        // int prev_track_idx_ = 0; // Lane 2 기준 이전 인덱스
+        int prev_track_idx_ = 0; // Lane 2 기준 이전 인덱스
     };
 
 } // namespace bisa
