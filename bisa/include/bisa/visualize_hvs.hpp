@@ -17,6 +17,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
+#include "std_msgs/msg/float32.hpp"
 
 struct ObstacleData
 {
@@ -42,12 +43,17 @@ private:
     double vel_static_thres_;
     double vel_slow_thres_;
 
+    double fast_vel = 0.0;
+    double slow_vel = 0.0;
+
     geometry_msgs::msg::PoseStamped::SharedPtr ego_pose_;
     std::map<std::string, ObstacleData> obstacles_;
 
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr ego_sub_;
     std::vector<rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr> hv_subs_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_slow_vel_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_fast_vel_;
     rclcpp::TimerBase::SharedPtr timer_;
 };
 

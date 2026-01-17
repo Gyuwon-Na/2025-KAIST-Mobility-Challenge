@@ -35,11 +35,13 @@ ObstacleRelay::ObstacleRelay() : Node("obstacle_relay")
 
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
         "/obstacles_markers", 10);
+    pub_slow_vel_ = this->create_publisher<std_msgs::msg::Float32>("/env/slow_vel", 10);
+    pub_fast_vel_ = this->create_publisher<std_msgs::msg::Float32>("/env/fast_vel", 10);
 
     timer_ = this->create_wall_timer(
         100ms, std::bind(&ObstacleRelay::timer_callback, this));
 
-    RCLCPP_INFO(this->get_logger(), "RC-Scale Visualizer Started: Optimized for 0.5 vs 0.75 m/s");
+    RCLCPP_INFO(this->get_logger(), "RC-Scale Visualizer Started");
 }
 
 void ObstacleRelay::update_dynamic_threshold()
@@ -96,6 +98,9 @@ void ObstacleRelay::update_dynamic_threshold()
             double avg_slow = sum_slow / cnt_slow;
             double avg_fast = sum_fast / cnt_fast;
 
+            this->slow_vel = avg_slow;
+            this->fast_vel = avg_fast;
+
             double new_threshold = (avg_slow + avg_fast) / 2.0;
 
             // [안전장치] 기준값이 너무 터무니없이 튀지 않도록 Clamp
@@ -107,6 +112,14 @@ void ObstacleRelay::update_dynamic_threshold()
 
             // Soft Update (천천히 반영)
             vel_slow_thres_ = (vel_slow_thres_ * 0.9) + (new_threshold * 0.1);
+
+            // 디버그 출력 (1초에 1번 제한)
+            // RCLCPP_WARN_THROTTLE(
+            //     this->get_logger(),
+            //     *this->get_clock(),
+            //     1000,
+            //     "FAST/SLOW SPLIT → slow_avg=%.2f m/s, fast_avg=%.2f m/s, thres=%.2f",
+            //     avg_slow, avg_fast, new_threshold);
         }
     }
     // else 블록 제거: 한 그룹만 있을 때는 섣불리 판단하지 않고 기존 기준 유지
@@ -167,6 +180,14 @@ void ObstacleRelay::hv_callback(const geometry_msgs::msg::PoseStamped::SharedPtr
 void ObstacleRelay::timer_callback()
 {
     update_dynamic_threshold();
+
+    std_msgs::msg::Float32 slow_msg;
+    slow_msg.data = this->slow_vel; // 또는 실제 평균 속도 변수
+    pub_slow_vel_->publish(slow_msg);
+
+    std_msgs::msg::Float32 fast_msg;
+    fast_msg.data = this->fast_vel; // 클래스 내 계산된 fast 속도
+    pub_fast_vel_->publish(fast_msg);
 
     double ego_x = 0.0, ego_y = 0.0;
     if (ego_pose_)
