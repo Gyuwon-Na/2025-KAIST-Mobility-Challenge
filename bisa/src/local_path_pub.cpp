@@ -171,6 +171,11 @@ namespace bisa
         return true; // SAFE
     }
 
+    bool LocalPathPubCpp::in_merge_zone(int idx)
+    {
+        return (idx >= FIXED_MERGE_IDX && idx <= FIXED_SPLIT_IDX);
+    }
+
     // ========================================================================
     // MAIN LOOP
     // ========================================================================
@@ -190,17 +195,84 @@ namespace bisa
         }
 
         int ego_idx = find_closest_idx_forward(2, ego_x_, ego_y_);
-        double target_vel = 2.0;
 
+        // 2. 목표 속도 결정 (내가 위치한 차선 기준)
+        double follow_speed = 2.0;
         if (current_lane_id == LaneID::LANE_2)
         {
-            // Lane 2: Slow Velocity 사용
-            target_vel = (env_slow_vel_ > 0.1) ? env_slow_vel_ : 1.5; // 값 안오면 1.5
+            follow_speed = (env_slow_vel_ > 0.1) ? env_slow_vel_ : 1.5;
         }
         else
         {
-            // Lane 3: Fast Velocity 사용
-            target_vel = (env_fast_vel_ > 0.1) ? env_fast_vel_ : 2.0; // 값 안오면 2.0
+            follow_speed = (env_fast_vel_ > 0.1) ? env_fast_vel_ : 2.0;
+        }
+
+        // 3. 전방 장애물 거리 탐색 (내 차선 기준)
+        double min_dist_ahead = 999.0;
+        bool obj_found = false;
+
+        for (auto const &[id, obs] : obstacles_)
+        {
+            if (obs.lane != current_lane_id)
+                continue;
+
+            double dx = obs.x - ego_x_;
+            double dy = obs.y - ego_y_;
+            // 로컬 좌표계 변환 (전방 거리)
+            double local_x = dx * std::cos(ego_yaw_) + dy * std::sin(ego_yaw_);
+
+            // 전방 0.0m ~ 20m 탐색
+            if (local_x > 0.0 && local_x < 2.0)
+            {
+                double dist = std::hypot(dx, dy);
+                if (dist < min_dist_ahead)
+                {
+                    min_dist_ahead = dist;
+                    obj_found = true;
+                }
+            }
+        }
+
+        // 4. 속도 발행
+        double target_vel = follow_speed;
+
+        if (obj_found)
+        {
+            if (min_dist_ahead < 1.0)
+            {
+                // [Case 1] 장애물 매우 가까움 (ACC 감속)
+                // [Case 1-1] 너무 가까우면(0.4m) 더 감속
+                if (min_dist_ahead <= 0.4)
+                {
+                    target_vel = follow_speed * 0.7; // 간격 벌리기
+                }
+                else
+                {
+                    target_vel = follow_speed; // 그룹 속도 유지
+                }
+            }
+            else
+            {
+                // [Case 2] 장애물이 있지만 멀리 있음 (1.0m 이상)
+                // [Case 2-1] 합류 구간이 아닐 때만 2.0으로 증속
+                if (!in_merge_zone(ego_idx))
+                {
+                    target_vel = 2.0;
+                }
+
+                // [Case 2-2] 합류 구간이면??
+            }
+        }
+        else
+        {
+            // [Case 3] 장애물 없음
+            // [Case 3-1] 합류 구간이 아닐 때만 2.0으로 증속
+            if (!in_merge_zone(ego_idx))
+            {
+                target_vel = 2.0;
+            }
+
+            // [Case 3-2] 합류 구간이면??
         }
 
         const auto &lane3 = processed_lanes_[2];
