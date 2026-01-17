@@ -3,139 +3,108 @@
 
 import os
 import sys
+import json
 import rclpy
-from ament_index_python.packages import get_package_share_directory
-
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
+from ament_index_python.packages import get_package_share_directory
 
-# 경로 import 안전장치
-try:
-    from mgeo_class_defs import MGeoPlannerMap
-    from dijkstra_planner import DijkstraPlanner
-except ImportError:
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    sys.path.append(current_dir)
-    from mgeo_class_defs import MGeoPlannerMap
-    from dijkstra_planner import DijkstraPlanner
 
 class GlobalPathPublisher(Node):
     def __init__(self):
-        # [핵심] YAML에 있는 임의의 파라미터(problem1, 2...)를 허용하기 위한 옵션
-        super().__init__("global_path_publisher", 
-                         allow_undeclared_parameters=True, 
-                         automatically_declare_parameters_from_overrides=True)
+        super().__init__("global_path_publisher")
 
         self.get_logger().info("=" * 60)
-        self.get_logger().info("Global Path Publisher (Multi-Scenario Mode)")
+        self.get_logger().info(" [FIX] Global Path Publisher: FORCING LANE THREE ")
         self.get_logger().info("=" * 60)
 
-        # QoS 설정
+        # QoS 설정 (Latched: 늦게 켜진 Rviz에서도 보이도록 설정)
         qos = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.global_path_pub = self.create_publisher(Path, "/user_global_path", qos)
 
-        # 1. HD맵 로드
-        try:
-            package_path = get_package_share_directory("bisa")
-            load_path = os.path.join(package_path, "hdmap_data")
-        except Exception as e:
-            load_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../hdmap_data")
+        # 경로 로드 및 발행
+        self.force_load_lane_three()
 
-        if not os.path.exists(load_path):
-            self.get_logger().error(f"HD map not found at: {load_path}")
-            sys.exit(1)
+    def force_load_lane_three(self):
+        # 1. 파일 경로 찾기
+        home_dir = os.path.expanduser("~")
+        file_path = os.path.join(home_dir, "KAIST/bisa/hdmap_data/lanes.json")
 
-        self.get_logger().info(f"Loading HD Map from: {load_path}")
-        mgeo = MGeoPlannerMap.create_instance_from_json(load_path)
-        self.nodes = mgeo.node_set.nodes
-        self.links = mgeo.link_set.lines
+        if not os.path.exists(file_path):
+            # 패키지 내부 경로 시도
+            try:
+                pkg_path = get_package_share_directory("bisa")
+                file_path = os.path.join(pkg_path, "hdmap_data", "lanes.json")
+            except Exception:
+                pass
 
-        self.planner = DijkstraPlanner(
-            self.nodes, self.links, enable_lane_change=True, lane_change_distance=0.2
-        )
-
-        # 2. [핵심] 파라미터 선택 로직
-        # (1) 어떤 문제를 풀 것인지 키값을 가져옵니다. (기본값: problem2)
-        target_key = "problem2"
-        if self.has_parameter("target_problem"):
-            target_key = self.get_parameter("target_problem").get_parameter_value().string_value
-        
-        self.get_logger().info(f"Selected Scenario: '{target_key}'")
-
-        # (2) 해당 키에 맞는 리스트 데이터를 가져옵니다.
-        input_numbers = []
-        if self.has_parameter(target_key):
-            input_numbers = self.get_parameter(target_key).get_parameter_value().integer_array_value
-            # 혹시 정수가 아니라 문자열 등으로 들어올 경우 대비
-            if not input_numbers:
-                 # ROS2 파라미터 특성상 리스트 파싱이 까다로울 수 있어 예외처리
-                 try:
-                     val = self.get_parameter(target_key).value
-                     if isinstance(val, list):
-                         input_numbers = val
-                 except:
-                     pass
-        else:
-            self.get_logger().warn(f"Key '{target_key}' not found in parameters! Check path.yaml.")
-
-        if not input_numbers:
-            self.get_logger().error(f"Node sequence is empty for '{target_key}'. Aborting path gen.")
+        if not os.path.exists(file_path):
+            self.get_logger().error(
+                f"CRITICAL ERROR: Cannot find lanes.json at {file_path}"
+            )
             return
 
-        self.get_logger().info(f"Sequence: {input_numbers}")
-
-        # 3. NODE_ 접두사 처리 및 경로 생성
-        if self.nodes:
-            first_key = next(iter(self.nodes.keys()))
-            if isinstance(first_key, str) and str(first_key).startswith("NODE_"):
-                self.node_sequence = [f"NODE_{n}" for n in input_numbers]
-            else:
-                self.node_sequence = input_numbers
-
-        self.global_path_msg = None
-        self.calculate_global_path()
-        
-        self.timer = self.create_timer(1.0, self.publish_path)
-
-    def calculate_global_path(self):
+        # 2. JSON 로드 및 'three' 키 강제 추출
         try:
-            result = self.planner.generate_path(self.node_sequence)
-            msg = Path()
-            msg.header.frame_id = "world"
+            with open(file_path, "r") as f:
+                data = json.load(f)
 
-            for point in result["point_path"]:
-                pose = PoseStamped()
-                pose.header.frame_id = "world"
-                pose.pose.position.x = float(point[0])
-                pose.pose.position.y = float(point[1])
-                pose.pose.position.z = float(point[2])
-                pose.pose.orientation.w = 1.0
-                msg.poses.append(pose)
+            # [강제] 무조건 'three'만 찾음
+            if "three" in data:
+                lane_three = data["three"]
 
-            self.global_path_msg = msg
-            self.get_logger().info(f"✓ Path Generated! {len(msg.poses)} points.")
+                # [디버깅] 터미널에 좌표 출력 (이게 -5.0 근처여야 함)
+                if len(lane_three) > 0:
+                    start_x = lane_three[0].get("x", 0)
+                    start_y = lane_three[0].get("y", 0)
+                    self.get_logger().info(
+                        f" -> CHECK: Lane 'three' Start Point: X={start_x}, Y={start_y}"
+                    )
+                    if start_x > -4.0:
+                        self.get_logger().warn(
+                            "WARNING: This coordinate looks like Lane 1 or 2! Check lanes.json content."
+                        )
+                    else:
+                        self.get_logger().info("OK: Coordinates look like Lane 3.")
+
+                self.publish_path(lane_three)
+            else:
+                self.get_logger().error("KEY ERROR: 'three' key not found in json!")
 
         except Exception as e:
-            self.get_logger().error(f"Failed to generate path: {e}")
+            self.get_logger().error(f"Failed to load JSON: {e}")
 
-    def publish_path(self):
-        if self.global_path_msg:
-            self.global_path_msg.header.stamp = self.get_clock().now().to_msg()
-            self.global_path_pub.publish(self.global_path_msg)
+    def publish_path(self, points):
+        msg = Path()
+        msg.header.frame_id = "world"
+        msg.header.stamp = self.get_clock().now().to_msg()
+
+        for pt in points:
+            if "x" not in pt or "y" not in pt:
+                continue
+
+            pose = PoseStamped()
+            pose.header = msg.header
+            pose.pose.position.x = float(pt["x"])
+            pose.pose.position.y = float(pt["y"])
+            pose.pose.position.z = 0.0
+            pose.pose.orientation.w = 1.0
+            msg.poses.append(pose)
+
+        self.global_path_pub.publish(msg)
+        self.get_logger().info(
+            f"✓ Published /user_global_path (Lane 3) with {len(msg.poses)} points."
+        )
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = GlobalPathPublisher()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == "__main__":

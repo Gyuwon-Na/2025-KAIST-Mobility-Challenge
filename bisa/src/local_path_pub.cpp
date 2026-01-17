@@ -1,7 +1,10 @@
 /**
  * @file local_path_pub.cpp
- * @brief Local Path Publisher Implementation - Integrated with Merge Detection & Priority Fix
- * @version 3.1
+ * @brief Safety-First Local Path Publisher
+ *        - Lane 3 고정 주행
+ *        - 합류/분기 구간 TTC 기반 안전 체크
+ *        - 역주행 방지 (진행 방향 기반 인덱스 검색)
+ * @version 4.0
  */
 
 #include "bisa/local_path_pub.hpp"
@@ -9,49 +12,38 @@
 namespace bisa
 {
 
-    // ============================================================================
-    // CONSTRUCTOR
-    // ============================================================================
-
     LocalPathPubCpp::LocalPathPubCpp() : Node("local_path_pub")
     {
         RCLCPP_INFO(this->get_logger(), "============================================");
-        RCLCPP_INFO(this->get_logger(), "Local Path Publisher v3.1 (Merge Safety Fix)");
+        RCLCPP_INFO(this->get_logger(), "Local Path: SAFETY MODE v4.0");
+        RCLCPP_INFO(this->get_logger(), "  - Lane 3 Fixed Path Following");
+        RCLCPP_INFO(this->get_logger(), "  - TTC-based Merge/Split Safety Check");
+        RCLCPP_INFO(this->get_logger(), "  - Anti-Reverse Direction Logic");
         RCLCPP_INFO(this->get_logger(), "============================================");
 
         auto qos = rclcpp::QoS(10).transient_local();
 
-        // Lane subscribers
+        // Lane Subscriptions
         sub_lane_[0] = this->create_subscription<nav_msgs::msg::Path>(
             "/hdmap/lane_one", qos,
             [this](nav_msgs::msg::Path::SharedPtr msg)
-            {
-                lane_paths_[0] = msg;
-                process_lane_path(0);
-            });
+            { lane_paths_[0] = msg; process_lane_path(0); });
 
         sub_lane_[1] = this->create_subscription<nav_msgs::msg::Path>(
             "/hdmap/lane_two", qos,
             [this](nav_msgs::msg::Path::SharedPtr msg)
-            {
-                lane_paths_[1] = msg;
-                process_lane_path(1);
-            });
+            { lane_paths_[1] = msg; process_lane_path(1); });
 
         sub_lane_[2] = this->create_subscription<nav_msgs::msg::Path>(
             "/hdmap/lane_three", qos,
             [this](nav_msgs::msg::Path::SharedPtr msg)
-            {
-                lane_paths_[2] = msg;
-                process_lane_path(2);
-            });
+            { lane_paths_[2] = msg; process_lane_path(2); });
 
-        // Obstacle subscriber
+        // Obstacles & Pose
         obs_sub_ = this->create_subscription<visualization_msgs::msg::MarkerArray>(
             "/obstacles_markers", 10,
             std::bind(&LocalPathPubCpp::obstacle_callback, this, std::placeholders::_1));
 
-        // Pose subscriber
         pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
             "/Ego_pose", rclcpp::SensorDataQoS(),
             std::bind(&LocalPathPubCpp::pose_callback, this, std::placeholders::_1));
@@ -59,9 +51,9 @@ namespace bisa
         // Publishers
         local_pub_ = this->create_publisher<nav_msgs::msg::Path>("/local_path", 10);
         target_vel_pub_ = this->create_publisher<std_msgs::msg::Float32>("/planning/target_v", 10);
-        debug_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/planning/debug_markers", 10);
+        debug_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/planning/debug", 10);
 
-        // Main control timer (50Hz)
+        // Timer (20ms -> 50Hz)
         timer_ = this->create_wall_timer(
             std::chrono::milliseconds(20),
             std::bind(&LocalPathPubCpp::control_loop, this));
@@ -71,1046 +63,307 @@ namespace bisa
     // UTILITY FUNCTIONS
     // ============================================================================
 
-    double LocalPathPubCpp::now_sec()
+    double LocalPathPubCpp::get_dist(double x1, double y1, double x2, double y2)
     {
-        return this->now().seconds();
+        return std::hypot(x1 - x2, y1 - y2);
     }
 
     double LocalPathPubCpp::normalize_angle(double angle)
     {
         while (angle > M_PI)
-            angle -= 2 * M_PI;
+            angle -= 2.0 * M_PI;
         while (angle < -M_PI)
-            angle += 2 * M_PI;
+            angle += 2.0 * M_PI;
         return angle;
     }
 
-    int LocalPathPubCpp::lane_to_int(LaneID lane)
-    {
-        switch (lane)
-        {
-        case LaneID::LANE_1:
-            return 0;
-        case LaneID::LANE_2:
-            return 1;
-        case LaneID::LANE_3:
-            return 2;
-        default:
-            return 1;
-        }
-    }
-
-    LaneID LocalPathPubCpp::int_to_lane(int i)
-    {
-        switch (i)
-        {
-        case 0:
-            return LaneID::LANE_1;
-        case 1:
-            return LaneID::LANE_2;
-        case 2:
-            return LaneID::LANE_3;
-        default:
-            return LaneID::LANE_2;
-        }
-    }
-
-    std::string LocalPathPubCpp::lane_str(LaneID lane)
-    {
-        switch (lane)
-        {
-        case LaneID::LANE_1:
-            return "L1";
-        case LaneID::LANE_2:
-            return "L2";
-        case LaneID::LANE_3:
-            return "L3";
-        default:
-            return "??";
-        }
-    }
-
-    std::string LocalPathPubCpp::state_str(DrivingState s)
-    {
-        switch (s)
-        {
-        case DrivingState::CRUISE:
-            return "CRUISE";
-        case DrivingState::PREPARE_OVERTAKE:
-            return "PREPARE";
-        case DrivingState::LANE_CHANGING:
-            return "LC";
-        case DrivingState::EMERGENCY_ACCEL:
-            return "ACCEL!";
-        case DrivingState::RETURN_TO_CENTER:
-            return "RETURN";
-        default:
-            return "???";
-        }
-    }
-
     // ============================================================================
-    // CALLBACKS
+    // [핵심] 진행 방향 기반 인덱스 검색 - 역주행 방지
     // ============================================================================
 
-    void LocalPathPubCpp::pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+    int LocalPathPubCpp::find_closest_idx_forward(int lane_idx, double x, double y)
     {
-        ego_x_ = msg->pose.position.x;
-        ego_y_ = msg->pose.position.y;
-        ego_yaw_ = msg->pose.orientation.z;
-        pose_received_ = true;
-
-        // Compute ego speed from position derivative
-        double current_sec = now_sec();
-        if (prev_pose_valid_)
-        {
-            double dt = current_sec - prev_pose_sec_;
-            if (dt > 0.01 && dt < 0.5)
-            {
-                double dx = ego_x_ - prev_x_;
-                double dy = ego_y_ - prev_y_;
-                double raw_speed = std::hypot(dx, dy) / dt;
-
-                // Check direction (forward or backward)
-                double move_angle = std::atan2(dy, dx);
-                double angle_diff = normalize_angle(move_angle - ego_yaw_);
-                if (std::abs(angle_diff) > M_PI / 2)
-                    raw_speed = -raw_speed;
-
-                // Low-pass filter
-                ego_speed_ = ego_speed_ * 0.7 + raw_speed * 0.3;
-            }
-        }
-
-        prev_x_ = ego_x_;
-        prev_y_ = ego_y_;
-        prev_pose_sec_ = current_sec;
-        prev_pose_valid_ = true;
-        current_lane_ = get_lane_at(ego_x_, ego_y_);
-    }
-
-    void LocalPathPubCpp::process_lane_path(int lane_idx)
-    {
-        if (!lane_paths_[lane_idx] || lane_paths_[lane_idx]->poses.empty())
-            return;
-
-        processed_lanes_[lane_idx].clear();
-        const auto &poses = lane_paths_[lane_idx]->poses;
-        double cumulative_s = 0.0;
-
-        for (size_t i = 0; i < poses.size(); ++i)
-        {
-            PathPoint pt;
-            pt.x = poses[i].pose.position.x;
-            pt.y = poses[i].pose.position.y;
-
-            // Compute arc length
-            if (i > 0)
-            {
-                double dx = pt.x - processed_lanes_[lane_idx][i - 1].x;
-                double dy = pt.y - processed_lanes_[lane_idx][i - 1].y;
-                cumulative_s += std::hypot(dx, dy);
-            }
-            pt.s = cumulative_s;
-
-            // Compute yaw
-            if (i < poses.size() - 1)
-            {
-                double dx = poses[i + 1].pose.position.x - pt.x;
-                double dy = poses[i + 1].pose.position.y - pt.y;
-                pt.yaw = std::atan2(dy, dx);
-            }
-            else if (i > 0)
-            {
-                pt.yaw = processed_lanes_[lane_idx][i - 1].yaw;
-            }
-            else
-            {
-                pt.yaw = 0.0;
-            }
-
-            processed_lanes_[lane_idx].push_back(pt);
-        }
-    }
-
-    void LocalPathPubCpp::obstacle_callback(const visualization_msgs::msg::MarkerArray::SharedPtr msg)
-    {
-        double current_sec = now_sec();
-
-        for (const auto &marker : msg->markers)
-        {
-            if (marker.ns != "surrounding_cars")
-                continue;
-            if (marker.type != visualization_msgs::msg::Marker::CUBE)
-                continue;
-
-            int id = marker.id;
-            double ox = marker.pose.position.x;
-            double oy = marker.pose.position.y;
-
-            auto it = obstacles_.find(id);
-            if (it != obstacles_.end())
-            {
-                // Update existing obstacle
-                auto &obs = it->second;
-                double dt = current_sec - obs.last_seen_sec;
-
-                if (dt > 0.01 && dt < 1.0)
-                {
-                    double vx = (ox - obs.x) / dt;
-                    double vy = (oy - obs.y) / dt;
-                    if (std::hypot(vx, vy) < 5.0)
-                    {
-                        obs.vx = obs.vx * 0.5 + vx * 0.5;
-                        obs.vy = obs.vy * 0.5 + vy * 0.5;
-                    }
-                }
-
-                obs.x = ox;
-                obs.y = oy;
-                obs.speed = std::hypot(obs.vx, obs.vy);
-                obs.is_static = (obs.speed < STATIC_SPEED_THRESHOLD);
-                obs.lane = get_lane_at(ox, oy);
-                obs.last_seen_sec = current_sec;
-            }
-            else
-            {
-                // Add new obstacle
-                ObstacleInfo obs;
-                obs.id = id;
-                obs.x = ox;
-                obs.y = oy;
-                obs.vx = obs.vy = 0.0;
-                obs.speed = 0.0;
-                obs.is_static = true;
-                obs.lane = get_lane_at(ox, oy);
-                obs.last_seen_sec = current_sec;
-                obstacles_[id] = obs;
-            }
-        }
-
-        // Remove stale obstacles
-        for (auto it = obstacles_.begin(); it != obstacles_.end();)
-        {
-            if ((current_sec - it->second.last_seen_sec) > 1.0)
-                it = obstacles_.erase(it);
-            else
-                ++it;
-        }
-    }
-
-    // ============================================================================
-    // LANE UTILITIES & MERGE CHECK
-    // ============================================================================
-
-    double LocalPathPubCpp::get_dist_to_lane(int lane_idx, double x, double y)
-    {
-        if (lane_idx < 0 || lane_idx > 2)
-            return 999.0;
-        if (processed_lanes_[lane_idx].empty())
-            return 999.0;
-
-        const auto &lane = processed_lanes_[lane_idx];
-        double min_d = 999.0;
-        size_t step = std::max(size_t(1), lane.size() / 500);
-
-        for (size_t i = 0; i < lane.size(); i += step)
-        {
-            double d = std::hypot(lane[i].x - x, lane[i].y - y);
-            if (d < min_d)
-                min_d = d;
-        }
-        return min_d;
-    }
-
-    LaneID LocalPathPubCpp::get_lane_at(double x, double y)
-    {
-        double d[3];
-        for (int i = 0; i < 3; ++i)
-            d[i] = get_dist_to_lane(i, x, y);
-
-        int best = 0;
-        for (int i = 1; i < 3; ++i)
-            if (d[i] < d[best])
-                best = i;
-
-        if (d[best] > LANE_THRESHOLD)
-            return LaneID::NONE;
-        return int_to_lane(best);
-    }
-
-    bool LocalPathPubCpp::are_lanes_merged(LaneID lane_a, LaneID lane_b)
-    {
-        if (lane_a == lane_b)
-            return true;
-
-        int idx_a = lane_to_int(lane_a);
-        int idx_b = lane_to_int(lane_b);
-
-        if (processed_lanes_[idx_a].empty() || processed_lanes_[idx_b].empty())
-            return false;
-
-        // Find closest point on lane A to ego
-        int closest_a = find_closest_idx(idx_a, ego_x_, ego_y_);
-        double ax = processed_lanes_[idx_a][closest_a].x;
-        double ay = processed_lanes_[idx_a][closest_a].y;
-
-        // Find closest point on lane B to that point
-        int closest_b = find_closest_idx(idx_b, ax, ay, true);
-        double bx = processed_lanes_[idx_b][closest_b].x;
-        double by = processed_lanes_[idx_b][closest_b].y;
-
-        double dist = std::hypot(ax - bx, ay - by);
-
-        // If lanes are closer than threshold, consider them merged
-        return (dist < MERGE_THRESHOLD);
-    }
-
-    int LocalPathPubCpp::find_closest_idx(int lane_idx, double x, double y, bool global_search)
-    {
-        if (lane_idx < 0 || lane_idx > 2)
-            return 0;
         if (processed_lanes_[lane_idx].empty())
             return 0;
 
         const auto &lane = processed_lanes_[lane_idx];
         int n = lane.size();
-        int best = last_closest_idx_[lane_idx];
-        double min_d = 999.0;
 
-        if (global_search || !initial_search_done_)
+        // 첫 검색이거나 인덱스가 초기화 안됨
+        if (last_idx_[lane_idx] < 0)
         {
-            // Full search
+            // Global search (초기 1회)
+            int best = 0;
+            double min_d = 1e9;
             for (int i = 0; i < n; ++i)
             {
-                double d = std::hypot(lane[i].x - x, lane[i].y - y);
+                double d = get_dist(x, y, lane[i].x, lane[i].y);
                 if (d < min_d)
                 {
                     min_d = d;
                     best = i;
                 }
             }
+            last_idx_[lane_idx] = best;
+            return best;
         }
-        else
+
+        // [핵심] 이전 인덱스 기준으로 "앞으로만" 검색 (역주행 방지)
+        // 검색 범위: last_idx - 5 ~ last_idx + 100 (뒤로는 조금만, 앞으로는 많이)
+        int best = last_idx_[lane_idx];
+        double min_d = 1e9;
+
+        for (int offset = -5; offset < 100; ++offset)
         {
-            // Local search around last known index
-            for (int i = -30; i < 200; ++i)
+            int idx = (last_idx_[lane_idx] + offset + n) % n;
+            double d = get_dist(x, y, lane[idx].x, lane[idx].y);
+
+            // 거리가 가장 가까운 점 선택
+            // 단, 너무 뒤로 가지 않도록 offset이 음수일 때는 penalty 적용
+            double penalty = (offset < 0) ? 0.1 * std::abs(offset) : 0.0;
+
+            if (d + penalty < min_d)
             {
-                int idx = (last_closest_idx_[lane_idx] + i + n) % n;
-                double d = std::hypot(lane[idx].x - x, lane[idx].y - y);
-                if (d < min_d)
-                {
-                    min_d = d;
-                    best = idx;
-                }
+                min_d = d;
+                best = idx;
             }
         }
 
-        last_closest_idx_[lane_idx] = best;
+        // 인덱스가 급격히 감소하면 (역주행 징후) 무시
+        int idx_diff = best - last_idx_[lane_idx];
+        if (idx_diff < -10 && idx_diff > -(n - 100))
+        {
+            // 역주행 방지: 이전 인덱스 유지하고 조금만 증가
+            best = (last_idx_[lane_idx] + 1) % n;
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                 "[ANTI-REVERSE] Index jump detected! Forcing forward.");
+        }
+
+        last_idx_[lane_idx] = best;
         return best;
     }
 
-    int LocalPathPubCpp::find_index_at_distance(int lane_idx, int start_idx, double target_dist)
+    // ============================================================================
+    // 합류/분기 구간 분석
+    // ============================================================================
+
+    void LocalPathPubCpp::analyze_topology()
     {
-        if (processed_lanes_[lane_idx].empty())
-            return start_idx;
-
-        const auto &lane = processed_lanes_[lane_idx];
-        int n = lane.size();
-        double accumulated_dist = 0.0;
-
-        for (int i = 0; i < 500; ++i)
+        if (processed_lanes_[1].empty() || processed_lanes_[2].empty())
         {
-            int idx = (start_idx + i) % n;
-            int next = (start_idx + i + 1) % n;
-            accumulated_dist += std::hypot(lane[next].x - lane[idx].x, lane[next].y - lane[idx].y);
-            if (accumulated_dist >= target_dist)
-                return next;
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                                 "Cannot analyze topology: Lane data missing.");
+            return;
         }
-        return (start_idx + 100) % n;
-    }
-
-    // ============================================================================
-    // CURVATURE & CORNER DETECTION
-    // ============================================================================
-
-    double LocalPathPubCpp::compute_curvature(int lane_idx, int idx, int window)
-    {
-        if (lane_idx < 0 || lane_idx > 2)
-            return 0.0;
-        if (processed_lanes_[lane_idx].size() < 30)
-            return 0.0;
-
-        const auto &lane = processed_lanes_[lane_idx];
-        int n = lane.size();
-
-        // Safe index wrapping
-        int i0 = ((idx - window) % n + n) % n;
-        int i1 = (idx % n + n) % n;
-        int i2 = ((idx + window) % n + n) % n;
-
-        // Triangle side lengths
-        double a = std::hypot(lane[i1].x - lane[i0].x, lane[i1].y - lane[i0].y);
-        double b = std::hypot(lane[i2].x - lane[i1].x, lane[i2].y - lane[i1].y);
-        double c = std::hypot(lane[i0].x - lane[i2].x, lane[i0].y - lane[i2].y);
-
-        if (a < 0.001 || b < 0.001 || c < 0.001)
-            return 0.0;
-
-        // Menger curvature using circumradius
-        double s = (a + b + c) / 2.0;
-        double area_sq = s * (s - a) * (s - b) * (s - c);
-
-        if (area_sq < 0.0)
-            return 0.0;
-
-        double area = std::sqrt(area_sq);
-        return 4.0 * area / (a * b * c);
-    }
-
-    void LocalPathPubCpp::update_corner_state(int lane_idx, int closest)
-    {
-        current_curvature_ = compute_curvature(lane_idx, closest, 10);
-        is_in_corner_ = (current_curvature_ > CORNER_CURVATURE_THRESHOLD);
-
-        int preview_idx = (closest + 40) % processed_lanes_[lane_idx].size();
-        double ahead_curv = compute_curvature(lane_idx, preview_idx, 10);
-        corner_approaching_ = (ahead_curv > CORNER_CURVATURE_THRESHOLD);
-    }
-
-    // ============================================================================
-    // OBSTACLE PROCESSING
-    // ============================================================================
-
-    void LocalPathPubCpp::update_all_obstacles_body_frame()
-    {
-        double cos_yaw = std::cos(ego_yaw_);
-        double sin_yaw = std::sin(ego_yaw_);
-
-        for (auto &[id, obs] : obstacles_)
+        if (topology_analyzed_)
         {
-            double dx = obs.x - ego_x_;
-            double dy = obs.y - ego_y_;
-            obs.rel_x = dx * cos_yaw + dy * sin_yaw;
-            obs.rel_y = -dx * sin_yaw + dy * cos_yaw;
-            obs.rel_vx = (obs.vx * cos_yaw + obs.vy * sin_yaw) - ego_speed_;
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                                 "Topology already analyzed.");
+            return;
         }
-    }
 
-    bool LocalPathPubCpp::check_path_collision(int lane_idx, double &collision_dist)
-    {
-        collision_dist = 999.0;
-        if (lane_idx < 0 || lane_idx > 2 || processed_lanes_[lane_idx].empty())
-            return false;
+        const auto &l3 = processed_lanes_[2]; // Lane 3 (Main Path)
+        const auto &l2 = processed_lanes_[1]; // Lane 2 (Conflict Lane)
 
-        const auto &lane = processed_lanes_[lane_idx];
-        int n = lane.size();
-        int closest = find_closest_idx(lane_idx, ego_x_, ego_y_);
+        // Lane 3의 각 점이 Lane 2와 얼마나 가까운지 분석
+        std::vector<double> dist_to_l2(l3.size(), 999.0);
 
-        double check_speed = std::max(ego_speed_, 0.2);
-        double total_dist = 0.0;
-        double max_check_dist = check_speed * PATH_CHECK_HORIZON;
-
-        for (int i = 1; i < 80 && total_dist < max_check_dist; ++i)
+        for (size_t i = 0; i < l3.size(); ++i)
         {
-            int idx = (closest + i) % n;
-            int prev_idx = (closest + i - 1) % n;
-            double seg_dist = std::hypot(lane[idx].x - lane[prev_idx].x, lane[idx].y - lane[prev_idx].y);
-            total_dist += seg_dist;
-            double t = total_dist / check_speed;
-
-            for (const auto &[id, obs] : obstacles_)
+            double min_d = 999.0;
+            for (size_t j = 0; j < l2.size(); ++j)
             {
-                // Predict obstacle position at time t
-                double obs_x = obs.x + obs.vx * t;
-                double obs_y = obs.y + obs.vy * t;
+                double d = get_dist(l3[i].x, l3[i].y, l2[j].x, l2[j].y);
+                if (d < min_d)
+                    min_d = d;
+            }
+            dist_to_l2[i] = min_d;
+        }
 
-                if (std::hypot(lane[idx].x - obs_x, lane[idx].y - obs_y) < PATH_COLLISION_RADIUS)
-                {
-                    if (total_dist < collision_dist)
-                        collision_dist = total_dist;
-                    return true;
-                }
+        // 합류/분기 구간 감지 (거리 < MERGE_DIST_THRESHOLD)
+        const double MERGE_DIST_THRESHOLD = 0.01; // 30cm 이내면 합류 구간
+
+        merge_start_idx_ = -1;
+        merge_end_idx_ = -1;
+
+        // 상태: 0=분리, 1=합류
+        int state = (dist_to_l2[0] < MERGE_DIST_THRESHOLD) ? 1 : 0;
+
+        for (size_t i = 1; i < l3.size(); ++i)
+        {
+            bool merged = (dist_to_l2[i] < MERGE_DIST_THRESHOLD);
+
+            RCLCPP_INFO(this->get_logger(), "Idx %zu: Dist to L2=%.2f, Merged=%d", i, dist_to_l2[i], merged);
+
+            if (state == 0 && merged)
+            {
+                // 분리 → 합류 (합류 시작점)
+                merge_start_idx_ = i;
+                RCLCPP_INFO(this->get_logger(), "[TOPOLOGY] Merge START at idx %d (%.2f, %.2f)",
+                            (int)i, l3[i].x, l3[i].y);
+                state = 1;
+            }
+            else if (state == 1 && !merged)
+            {
+                // 합류 → 분리 (분기점)
+                merge_end_idx_ = i;
+                RCLCPP_INFO(this->get_logger(), "[TOPOLOGY] Merge END (Split) at idx %d (%.2f, %.2f)",
+                            (int)i, l3[i].x, l3[i].y);
+                state = 0;
+                break; // 첫 번째 합류/분기 구간만 분석
             }
         }
-        return false;
+
+        // 유효성 체크
+        if (merge_start_idx_ >= 0 && merge_end_idx_ < 0)
+        {
+            // 끝까지 합류 상태면 마지막을 분기점으로
+            merge_end_idx_ = l3.size() - 1;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "[TOPOLOGY] Analysis Complete: merge=[%d, %d]",
+                    merge_start_idx_, merge_end_idx_);
+
+        topology_analyzed_ = true;
     }
 
-    SurroundingStatus LocalPathPubCpp::check_all_zones()
+    // ============================================================================
+    // TTC 기반 안전성 체크
+    // ============================================================================
+
+    double LocalPathPubCpp::calculate_ttc(const ObstacleInfo &obs)
     {
-        SurroundingStatus status;
-        double current_sec = now_sec();
-        int path_lane = lane_to_int(target_lane_);
-        double path_coll_dist;
+        double dx = obs.x - ego_x_;
+        double dy = obs.y - ego_y_;
+        double dist = std::hypot(dx, dy);
+
+        if (dist < 0.01)
+            return 0.0; // 이미 충돌
+
+        // 차량 헤딩 방향
+        double heading_x = std::cos(ego_yaw_);
+        double heading_y = std::sin(ego_yaw_);
+
+        // 내적으로 전방 여부 확인 (음수면 후방)
+        double forward_dot = dx * heading_x + dy * heading_y;
+        if (forward_dot < 0)
+            return 999.0; // 후방 장애물은 무시
+
+        // 상대 속도 계산
+        double ego_vx = ego_speed_ * heading_x;
+        double ego_vy = ego_speed_ * heading_y;
+        double rel_vx = obs.vx - ego_vx;
+        double rel_vy = obs.vy - ego_vy;
+
+        // Closing speed (양수면 가까워지는 중)
+        double closing_speed = -(rel_vx * dx + rel_vy * dy) / dist;
+
+        if (closing_speed <= 0.01)
+            return 999.0; // 멀어지거나 정지
+
+        return dist / closing_speed;
+    }
+
+    bool LocalPathPubCpp::check_merge_safety()
+    {
+        // 합류 구간: Lane 2의 HV와 충돌 위험 체크
+        double min_ttc = 999.0;
+        int danger_id = -1;
 
         for (const auto &[id, obs] : obstacles_)
         {
-            if ((current_sec - obs.last_seen_sec) > 0.5)
+            // Lane 2 장애물만 체크
+            if (obs.lane != LaneID::LANE_2)
                 continue;
 
-            double rx = obs.rel_x;
-            double ry = obs.rel_y;
-
-            // Check obstacles in current lane
-            if (obs.lane == current_lane_)
+            double ttc = calculate_ttc(obs);
+            if (ttc < min_ttc)
             {
-                // Front zone check
-                if (rx > -OBS_HALF_LENGTH && rx < FRONT_ZONE_LENGTH + OBS_HALF_LENGTH &&
-                    std::abs(ry) < FRONT_ZONE_WIDTH + OBS_HALF_WIDTH)
-                {
-                    double effective_dist = rx - OBS_HALF_LENGTH;
-                    if (effective_dist < status.front_dist && effective_dist > -0.1)
-                    {
-                        status.front_dist = effective_dist;
-                        status.front_speed = obs.speed;
-                        status.front_is_static = obs.is_static;
-                        status.front_id = id;
-
-                        if (effective_dist < FRONT_SAFE_DIST)
-                            status.front_blocked = true;
-                        if (effective_dist < FRONT_DANGER_DIST)
-                            status.front_danger = true;
-                        if (effective_dist < FRONT_CRITICAL_DIST)
-                            status.front_critical = true;
-                    }
-                }
-
-                // Rear zone check
-                if (rx < OBS_HALF_LENGTH && rx > -(REAR_ZONE_LENGTH + OBS_HALF_LENGTH) &&
-                    std::abs(ry) < REAR_ZONE_WIDTH + OBS_HALF_WIDTH)
-                {
-                    double effective_dist = -rx - OBS_HALF_LENGTH;
-                    if (effective_dist > 0 && effective_dist < status.rear_dist)
-                    {
-                        status.rear_dist = effective_dist;
-                        status.rear_speed = obs.speed;
-
-                        double closing_speed = -obs.rel_vx;
-                        if (closing_speed > 0.05)
-                        {
-                            status.rear_ttc = effective_dist / closing_speed;
-                            if (status.rear_ttc < REAR_TTC_THRESHOLD)
-                                status.rear_danger = true;
-                        }
-                    }
-                }
-            }
-
-            // Check obstacles in adjacent lanes
-            if (obs.lane != current_lane_ && obs.lane != LaneID::NONE)
-            {
-                if (rx > SIDE_ZONE_START - OBS_HALF_LENGTH && rx < SIDE_ZONE_END + OBS_HALF_LENGTH)
-                {
-                    if (ry > 0) // Left side
-                    {
-                        double lat_dist = ry - OBS_HALF_WIDTH;
-                        if (lat_dist < SIDE_ZONE_OUTER && lat_dist > -0.1)
-                        {
-                            status.left_clear = false;
-                            status.left_dist = std::min(status.left_dist, lat_dist);
-                        }
-                    }
-                    else // Right side
-                    {
-                        double lat_dist = -ry - OBS_HALF_WIDTH;
-                        if (lat_dist < SIDE_ZONE_OUTER && lat_dist > -0.1)
-                        {
-                            status.right_clear = false;
-                            status.right_dist = std::min(status.right_dist, lat_dist);
-                        }
-                    }
-                }
+                min_ttc = ttc;
+                danger_id = id;
             }
         }
 
-        // Path collision check
-        status.path_collision = check_path_collision(path_lane, path_coll_dist);
-        status.path_collision_dist = path_coll_dist;
-
-        return status;
-    }
-
-    // ============================================================================
-    // SAFETY CHECK FUNCTIONS
-    // ============================================================================
-
-    bool LocalPathPubCpp::is_target_left(LaneID target)
-    {
-        int t_idx = lane_to_int(target);
-        if (processed_lanes_[t_idx].empty())
-            return false;
-
-        int closest = find_closest_idx(t_idx, ego_x_, ego_y_);
-        double tx = processed_lanes_[t_idx][closest].x;
-        double ty = processed_lanes_[t_idx][closest].y;
-
-        // Cross product to determine side
-        double cross = std::cos(ego_yaw_) * (ty - ego_y_) - std::sin(ego_yaw_) * (tx - ego_x_);
-        return cross > 0.0;
-    }
-
-    bool LocalPathPubCpp::is_lane_blocked_by_static(LaneID lane)
-    {
-        for (const auto &[id, obs] : obstacles_)
+        if (min_ttc < TTC_THRESHOLD)
         {
-            if (obs.lane != lane || !obs.is_static)
-                continue;
-
-            double dist = std::hypot(obs.x - ego_x_, obs.y - ego_y_);
-            double forward = (obs.x - ego_x_) * std::cos(ego_yaw_) + (obs.y - ego_y_) * std::sin(ego_yaw_);
-
-            if (dist < 2.0 && forward > -0.3)
-                return true;
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+                                 "[MERGE DANGER] L2 HV id=%d, TTC=%.2f < %.1f", danger_id, min_ttc, TTC_THRESHOLD);
+            return false;
         }
-        return false;
-    }
-
-    bool LocalPathPubCpp::is_overtake_safe(LaneID target)
-    {
-        bool going_left = is_target_left(target);
-
-        // Check side clearance
-        if (going_left && !current_surrounding_.left_clear)
-            return false;
-        if (!going_left && !current_surrounding_.right_clear)
-            return false;
-
-        // Check path collision
-        double coll_dist;
-        int target_idx = lane_to_int(target);
-        if (check_path_collision(target_idx, coll_dist) && coll_dist < 0.5)
-            return false;
-
-        // More conservative in corners
-        double safety_margin_scale = is_in_corner_ ? 1.5 : 1.0;
-
-        for (const auto &[id, obs] : obstacles_)
-        {
-            if (obs.lane != target)
-                continue;
-
-            double rx = obs.rel_x;
-
-            // Front check (extended in corners)
-            if (rx > -OBS_HALF_LENGTH && rx < FRONT_ZONE_LENGTH * safety_margin_scale)
-            {
-                if (rx - OBS_HALF_LENGTH < FRONT_CRITICAL_DIST * safety_margin_scale)
-                    return false;
-            }
-
-            // Rear/blind spot check
-            double blind_spot_rear = -REAR_ZONE_LENGTH;
-            if (rx < OBS_HALF_LENGTH && rx > blind_spot_rear)
-            {
-                // Physical overlap check (speed independent)
-                if (rx > -1.0)
-                    return false;
-
-                // Fast approach check
-                double closing = -obs.rel_vx;
-                if (closing > 0.1)
-                {
-                    double dist = -rx;
-                    if (dist / closing < (1.5 * safety_margin_scale))
-                        return false;
-                }
-            }
-        }
-
         return true;
     }
 
-    std::pair<double, double> LocalPathPubCpp::check_lane_front(LaneID lane)
+    bool LocalPathPubCpp::check_split_safety()
     {
-        double min_dist = 999.0;
-        double obs_speed = 0.0;
+        // 분기 구간: Lane 3의 HV와 충돌 위험 체크
+        double min_ttc = 999.0;
+        int danger_id = -1;
 
         for (const auto &[id, obs] : obstacles_)
         {
-            if (obs.lane != lane)
+            // Lane 3 장애물만 체크
+            if (obs.lane != LaneID::LANE_3)
                 continue;
 
-            double dist = std::hypot(obs.x - ego_x_, obs.y - ego_y_);
-            double dx = obs.x - ego_x_;
-            double dy = obs.y - ego_y_;
-            double forward = dx * std::cos(ego_yaw_) + dy * std::sin(ego_yaw_);
-
-            if (forward > 0 && dist < min_dist)
+            double ttc = calculate_ttc(obs);
+            if (ttc < min_ttc)
             {
-                min_dist = dist;
-                obs_speed = obs.speed;
+                min_ttc = ttc;
+                danger_id = id;
             }
         }
 
-        return {min_dist, obs_speed};
+        if (min_ttc < TTC_THRESHOLD)
+        {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+                                 "[SPLIT DANGER] L3 HV id=%d, TTC=%.2f < %.1f", danger_id, min_ttc, TTC_THRESHOLD);
+            return false;
+        }
+        return true;
     }
 
     // ============================================================================
-    // LANE SELECTION
+    // Lane 판별
     // ============================================================================
 
-    LaneID LocalPathPubCpp::choose_overtake_lane()
+    LaneID LocalPathPubCpp::get_lane_at(double x, double y)
     {
-        int current_idx = lane_to_int(current_lane_);
-        std::vector<int> candidates;
+        double min_d2 = 999.0, min_d3 = 999.0;
 
-        bool avoid_lane1 = is_in_corner_ || corner_approaching_;
-
-        // Determine candidate lanes based on current lane
-        if (current_idx == 0) // L1
+        // Lane 2
+        if (!processed_lanes_[1].empty())
         {
-            candidates = {1, 2};
-        }
-        else if (current_idx == 1) // L2
-        {
-            // Priority: L1 (left) first to avoid merge zone danger
-            if (avoid_lane1)
-                candidates = {2};
-            else
-                candidates = {0, 2};
-        }
-        else // L3
-        {
-            candidates = {1};
-        }
-
-        // Evaluate candidates
-        for (int cand : candidates)
-        {
-            LaneID target = int_to_lane(cand);
-
-            // Skip L1 in corners
-            if (avoid_lane1 && cand == 0)
-                continue;
-
-            // Skip merged lanes
-            if (are_lanes_merged(current_lane_, target))
-                continue;
-
-            // Skip lanes blocked by static obstacles
-            if (is_lane_blocked_by_static(target))
-                continue;
-
-            // Check path collision
-            double coll_dist;
-            if (check_path_collision(cand, coll_dist) && coll_dist < 0.5)
-                continue;
-
-            // Final safety check
-            if (is_overtake_safe(target))
-                return target;
-        }
-
-        return current_lane_;
-    }
-
-    // ============================================================================
-    // STATE MACHINE
-    // ============================================================================
-
-    void LocalPathPubCpp::update_state_machine()
-    {
-        double current_sec = now_sec();
-        const auto &s = current_surrounding_;
-
-        // Emergency: rear danger handling
-        if (s.rear_danger &&
-            current_state_ != DrivingState::EMERGENCY_ACCEL &&
-            current_state_ != DrivingState::LANE_CHANGING)
-        {
-            if (!s.front_critical && s.front_dist > FRONT_DANGER_DIST)
+            for (const auto &pt : processed_lanes_[1])
             {
-                current_state_ = DrivingState::EMERGENCY_ACCEL;
-                return;
-            }
-            else
-            {
-                LaneID escape = choose_overtake_lane();
-                if (escape != current_lane_ && is_overtake_safe(escape))
-                {
-                    target_lane_ = escape;
-                    current_state_ = DrivingState::LANE_CHANGING;
-                    is_lane_changing_ = true;
-                    lane_change_start_sec_ = current_sec;
-                    lane_change_progress_ = 0.0;
-                    return;
-                }
+                double d = get_dist(x, y, pt.x, pt.y);
+                if (d < min_d2)
+                    min_d2 = d;
             }
         }
 
-        // Preemptive escape from L1 before corner
-        if (current_lane_ == LaneID::LANE_1 && corner_approaching_ &&
-            current_state_ == DrivingState::CRUISE)
+        // Lane 3
+        if (!processed_lanes_[2].empty())
         {
-            if (is_overtake_safe(LaneID::LANE_2) && !are_lanes_merged(current_lane_, LaneID::LANE_2))
+            for (const auto &pt : processed_lanes_[2])
             {
-                target_lane_ = LaneID::LANE_2;
-                current_state_ = DrivingState::LANE_CHANGING;
-                is_lane_changing_ = true;
-                lane_change_start_sec_ = current_sec;
-                lane_change_progress_ = 0.0;
-                return;
+                double d = get_dist(x, y, pt.x, pt.y);
+                if (d < min_d3)
+                    min_d3 = d;
             }
         }
 
-        // Main state machine
-        switch (current_state_)
-        {
-        case DrivingState::CRUISE:
-        {
-            bool need_overtake = s.front_blocked || s.front_danger;
-            if (s.path_collision && s.path_collision_dist < 0.6)
-                need_overtake = true;
+        // 더 가까운 차선 반환 (threshold 내)
+        const double LANE_THRESHOLD = 0.5;
+        if (min_d2 < min_d3 && min_d2 < LANE_THRESHOLD)
+            return LaneID::LANE_2;
+        if (min_d3 < min_d2 && min_d3 < LANE_THRESHOLD)
+            return LaneID::LANE_3;
+        if (min_d2 < LANE_THRESHOLD)
+            return LaneID::LANE_2;
+        if (min_d3 < LANE_THRESHOLD)
+            return LaneID::LANE_3;
 
-            if (need_overtake)
-            {
-                LaneID overtake = choose_overtake_lane();
-                if (overtake != current_lane_)
-                {
-                    target_lane_ = overtake;
-                    if (s.front_is_static || s.front_critical)
-                    {
-                        // Immediate lane change for static/critical
-                        current_state_ = DrivingState::LANE_CHANGING;
-                        is_lane_changing_ = true;
-                        lane_change_start_sec_ = current_sec;
-                        lane_change_progress_ = 0.0;
-                    }
-                    else
-                    {
-                        // Prepare for dynamic obstacles
-                        current_state_ = DrivingState::PREPARE_OVERTAKE;
-                        safe_check_count_ = 0;
-                    }
-                }
-            }
-
-            // Return to center when safe
-            if (current_lane_ != LaneID::LANE_2 && !need_overtake)
-            {
-                auto center_check = check_lane_front(LaneID::LANE_2);
-                if (center_check.first > FRONT_SAFE_DIST * 1.5 &&
-                    is_overtake_safe(LaneID::LANE_2) &&
-                    !are_lanes_merged(current_lane_, LaneID::LANE_2))
-                {
-                    target_lane_ = LaneID::LANE_2;
-                    current_state_ = DrivingState::RETURN_TO_CENTER;
-                    is_lane_changing_ = true;
-                    lane_change_start_sec_ = current_sec;
-                    lane_change_progress_ = 0.0;
-                }
-            }
-            break;
-        }
-
-        case DrivingState::PREPARE_OVERTAKE:
-        {
-            if (is_overtake_safe(target_lane_) && !are_lanes_merged(current_lane_, target_lane_))
-            {
-                safe_check_count_++;
-                if (safe_check_count_ >= SAFE_CHECK_REQUIRED)
-                {
-                    current_state_ = DrivingState::LANE_CHANGING;
-                    is_lane_changing_ = true;
-                    lane_change_start_sec_ = current_sec;
-                    lane_change_progress_ = 0.0;
-                }
-            }
-            else
-            {
-                safe_check_count_ = std::max(0, safe_check_count_ - 1);
-            }
-
-            // Cancel if front clears
-            if (!s.front_blocked && s.front_dist > FRONT_SAFE_DIST)
-            {
-                current_state_ = DrivingState::CRUISE;
-                target_lane_ = current_lane_;
-            }
-            break;
-        }
-
-        case DrivingState::LANE_CHANGING:
-        case DrivingState::RETURN_TO_CENTER:
-        {
-            double elapsed = current_sec - lane_change_start_sec_;
-            lane_change_progress_ = std::min(1.0, elapsed / LANE_CHANGE_TIME);
-
-            // Check if lane change completed
-            if (current_lane_ == target_lane_)
-            {
-                if (elapsed > 0.3)
-                {
-                    current_state_ = DrivingState::CRUISE;
-                    is_lane_changing_ = false;
-                }
-            }
-
-            // Timeout
-            if (elapsed > 4.0)
-            {
-                current_state_ = DrivingState::CRUISE;
-                is_lane_changing_ = false;
-                target_lane_ = current_lane_;
-            }
-            break;
-        }
-
-        case DrivingState::EMERGENCY_ACCEL:
-        {
-            if (!s.rear_danger || s.rear_dist > REAR_DANGER_DIST * 1.5)
-            {
-                current_state_ = DrivingState::CRUISE;
-            }
-            else if (s.front_danger)
-            {
-                // Need escape route
-                LaneID escape = choose_overtake_lane();
-                if (escape != current_lane_ && is_overtake_safe(escape))
-                {
-                    target_lane_ = escape;
-                    current_state_ = DrivingState::LANE_CHANGING;
-                    is_lane_changing_ = true;
-                    lane_change_start_sec_ = current_sec;
-                    lane_change_progress_ = 0.0;
-                }
-            }
-            break;
-        }
-        }
-    }
-
-    // ============================================================================
-    // VELOCITY COMPUTATION
-    // ============================================================================
-
-    double LocalPathPubCpp::compute_velocity()
-    {
-        const auto &s = current_surrounding_;
-        double vel = CRUISE_SPEED;
-
-        switch (current_state_)
-        {
-        case DrivingState::CRUISE:
-            if (s.front_blocked)
-            {
-                if (s.front_is_static)
-                {
-                    // Static obstacle: proportional slowdown
-                    double dist_ratio = std::max(0.0, s.front_dist - 0.5) / 5.0;
-                    vel = std::min(SLOW_SPEED, dist_ratio * CRUISE_SPEED);
-                }
-                else
-                {
-                    // Dynamic obstacle: match speed or maintain safe distance
-                    double gap = s.front_dist - FRONT_CRITICAL_DIST;
-                    double safe_v = std::max(0.0, gap * 1.5);
-                    vel = std::min(CRUISE_SPEED, std::max(s.front_speed, safe_v));
-                }
-            }
-
-            // Path collision: emergency slowdown
-            if (s.path_collision && s.path_collision_dist < 1.0)
-            {
-                double collision_ratio = std::max(0.0, s.path_collision_dist - 0.3);
-                vel = std::min(vel, collision_ratio * 2.0);
-            }
-            break;
-
-        case DrivingState::PREPARE_OVERTAKE:
-            if (!s.front_is_static)
-                vel = std::min(CRUISE_SPEED, s.front_speed);
-            else
-                vel = SLOW_SPEED;
-            break;
-
-        case DrivingState::LANE_CHANGING:
-        case DrivingState::RETURN_TO_CENTER:
-            vel = OVERTAKE_SPEED;
-            break;
-
-        case DrivingState::EMERGENCY_ACCEL:
-            vel = ACCEL_SPEED;
-            if (s.front_blocked)
-                vel = std::min(vel, std::max(s.front_speed, 1.0));
-            break;
-        }
-
-        // Corner speed limit
-        if (is_in_corner_)
-            vel = std::min(vel, 1.2);
-
-        return std::clamp(vel, MIN_SPEED, 3.0);
-    }
-
-    // ============================================================================
-    // PATH GENERATION
-    // ============================================================================
-
-    std::vector<PathPoint> LocalPathPubCpp::generate_lane_change_path()
-    {
-        std::vector<PathPoint> trajectory;
-
-        int from_idx = lane_to_int(current_lane_);
-        int to_idx = lane_to_int(target_lane_);
-
-        if (processed_lanes_[from_idx].empty() || processed_lanes_[to_idx].empty())
-            return trajectory;
-
-        const auto &from_lane = processed_lanes_[from_idx];
-        const auto &to_lane = processed_lanes_[to_idx];
-        int n_from = from_lane.size();
-
-        int from_closest = find_closest_idx(from_idx, ego_x_, ego_y_);
-        double remaining_forward = LANE_CHANGE_FORWARD_DIST * (1.0 - lane_change_progress_);
-        remaining_forward = std::max(remaining_forward, 0.3);
-
-        int end_idx_from = find_index_at_distance(from_idx, from_closest, remaining_forward);
-        int num_points = 50;
-
-        for (int i = 0; i <= num_points; ++i)
-        {
-            double t = static_cast<double>(i) / num_points;
-
-            // Smoothstep blending (quintic hermite)
-            double lateral_blend = t * t * t * (t * (6.0 * t - 15.0) + 10.0);
-
-            double idx_ratio = t * (end_idx_from - from_closest);
-            int from_idx_interp = (from_closest + static_cast<int>(idx_ratio) + n_from) % n_from;
-            int to_idx_interp = find_closest_idx(to_idx, from_lane[from_idx_interp].x,
-                                                 from_lane[from_idx_interp].y, true);
-
-            PathPoint pt;
-            pt.x = from_lane[from_idx_interp].x * (1.0 - lateral_blend) +
-                   to_lane[to_idx_interp].x * lateral_blend;
-            pt.y = from_lane[from_idx_interp].y * (1.0 - lateral_blend) +
-                   to_lane[to_idx_interp].y * lateral_blend;
-
-            // Compute yaw from next point
-            if (i < num_points)
-            {
-                double next_t = static_cast<double>(i + 1) / num_points;
-                double next_lateral = next_t * next_t * next_t * (next_t * (6.0 * next_t - 15.0) + 10.0);
-                double next_idx_ratio = next_t * (end_idx_from - from_closest);
-                int next_from = (from_closest + static_cast<int>(next_idx_ratio) + n_from) % n_from;
-                int next_to = find_closest_idx(to_idx, from_lane[next_from].x,
-                                               from_lane[next_from].y, true);
-                double next_x = from_lane[next_from].x * (1.0 - next_lateral) +
-                                to_lane[next_to].x * next_lateral;
-                double next_y = from_lane[next_from].y * (1.0 - next_lateral) +
-                                to_lane[next_to].y * next_lateral;
-                pt.yaw = std::atan2(next_y - pt.y, next_x - pt.x);
-            }
-            else
-            {
-                pt.yaw = to_lane[to_idx_interp].yaw;
-            }
-
-            pt.s = t * remaining_forward;
-            trajectory.push_back(pt);
-        }
-
-        return trajectory;
+        return LaneID::NONE;
     }
 
     // ============================================================================
@@ -1121,188 +374,250 @@ namespace bisa
     {
         if (!pose_received_)
             return;
-
-        // Check all lanes are ready
-        bool ready = true;
-        for (int i = 0; i < 3; ++i)
-        {
-            if (processed_lanes_[i].empty())
-            {
-                ready = false;
-                break;
-            }
-        }
-        if (!ready)
+        if (processed_lanes_[2].empty())
             return;
 
-        // Initial index search
-        if (!initial_search_done_)
+        // 1. 토폴로지 분석 (1회)
+        analyze_topology();
+
+        // 2. 현재 위치 인덱스 (역주행 방지 로직 적용)
+        int ego_idx = find_closest_idx_forward(2, ego_x_, ego_y_);
+        const auto &lane3 = processed_lanes_[2];
+        int n = lane3.size();
+
+        // 3. 기본 속도
+        double target_vel = CRUISE_SPEED;
+        std::string state_str = "CRUISE";
+
+        // 4. 합류/분기 구간 체크
+        bool in_merge_zone = false;
+        bool approaching_merge = false;
+        bool in_split_zone = false;
+        bool approaching_split = false;
+
+        if (merge_start_idx_ >= 0 && merge_end_idx_ >= 0)
         {
-            for (int i = 0; i < 3; ++i)
-                find_closest_idx(i, ego_x_, ego_y_, true);
-            initial_search_done_ = true;
-            RCLCPP_INFO(this->get_logger(), "Initial search done.");
+            // 합류 구간 접근 체크 (앞으로 LOOKAHEAD_DIST 이내)
+            double dist_to_merge_start = 0.0;
+            for (int i = ego_idx; i < ego_idx + 100 && i < ego_idx + n; ++i)
+            {
+                int idx = i % n;
+                int next_idx = (i + 1) % n;
+                dist_to_merge_start += get_dist(lane3[idx].x, lane3[idx].y,
+                                                lane3[next_idx].x, lane3[next_idx].y);
+                if (idx == merge_start_idx_)
+                {
+                    approaching_merge = (dist_to_merge_start < LOOKAHEAD_DIST);
+                    break;
+                }
+            }
+
+            // 합류 구간 내부인지 체크
+            if (merge_start_idx_ < merge_end_idx_)
+            {
+                in_merge_zone = (ego_idx >= merge_start_idx_ && ego_idx < merge_end_idx_);
+            }
+            else
+            {
+                // wrap-around case
+                in_merge_zone = (ego_idx >= merge_start_idx_ || ego_idx < merge_end_idx_);
+            }
+
+            // 분기점 접근 체크
+            double dist_to_split = 0.0;
+            for (int i = ego_idx; i < ego_idx + 100 && i < ego_idx + n; ++i)
+            {
+                int idx = i % n;
+                int next_idx = (i + 1) % n;
+                dist_to_split += get_dist(lane3[idx].x, lane3[idx].y,
+                                          lane3[next_idx].x, lane3[next_idx].y);
+                if (idx == merge_end_idx_)
+                {
+                    approaching_split = (dist_to_split < LOOKAHEAD_DIST);
+                    in_split_zone = (dist_to_split < LOOKAHEAD_DIST * 0.5);
+                    break;
+                }
+            }
         }
 
-        // Initialize lane if not set
-        if (current_lane_ == LaneID::NONE)
+        // 5. 안전성 체크 및 속도 조절
+        if (approaching_merge || in_merge_zone)
         {
-            current_lane_ = get_lane_at(ego_x_, ego_y_);
-            if (current_lane_ == LaneID::NONE)
-                current_lane_ = LaneID::LANE_2;
-            target_lane_ = current_lane_;
+            if (!check_merge_safety())
+            {
+                target_vel = 0.0;
+                state_str = "WAIT_MERGE";
+            }
+            else
+            {
+                target_vel = SLOW_SPEED;
+                state_str = "MERGE";
+            }
         }
 
-        // Update obstacle positions in body frame
-        update_all_obstacles_body_frame();
-
-        // Update corner state
-        int path_lane_idx = lane_to_int(is_lane_changing_ ? target_lane_ : current_lane_);
-        int closest = find_closest_idx(path_lane_idx, ego_x_, ego_y_);
-        update_corner_state(path_lane_idx, closest);
-
-        // Check surrounding environment and update state machine
-        current_surrounding_ = check_all_zones();
-        update_state_machine();
-
-        // Periodic logging
-        double current_sec = now_sec();
-        if ((current_sec - last_log_sec_) > 1.0)
+        if (approaching_split || in_split_zone)
         {
-            RCLCPP_INFO(this->get_logger(), "[%s] %s%s | Spd=%.2f",
-                        state_str(current_state_).c_str(),
-                        lane_str(current_lane_).c_str(),
-                        (target_lane_ != current_lane_) ? ("->" + lane_str(target_lane_)).c_str() : "",
-                        ego_speed_);
-            last_log_sec_ = current_sec;
+            if (!check_split_safety())
+            {
+                target_vel = 0.0;
+                state_str = "WAIT_SPLIT";
+            }
+            else if (state_str != "WAIT_MERGE")
+            {
+                target_vel = SLOW_SPEED;
+                state_str = "SPLIT";
+            }
         }
 
-        // Generate local path message
+        // 6. Local Path 생성 (Lane 3 기반)
         nav_msgs::msg::Path local_path_msg;
         local_path_msg.header.frame_id = "world";
         local_path_msg.header.stamp = this->now();
 
-        if (is_lane_changing_)
+        for (int i = 0; i < PATH_POINTS; ++i)
         {
-            // Lane change path
-            auto lc_path = generate_lane_change_path();
-            for (const auto &pt : lc_path)
-            {
-                geometry_msgs::msg::PoseStamped pose;
-                pose.header = local_path_msg.header;
-                pose.pose.position.x = pt.x;
-                pose.pose.position.y = pt.y;
-                pose.pose.position.z = 0.0;
-                tf2::Quaternion q;
-                q.setRPY(0, 0, pt.yaw);
-                pose.pose.orientation = tf2::toMsg(q);
-                local_path_msg.poses.push_back(pose);
-            }
+            int idx = (ego_idx + i) % n;
+            geometry_msgs::msg::PoseStamped pose;
+            pose.header = local_path_msg.header;
+            pose.pose.position.x = lane3[idx].x;
+            pose.pose.position.y = lane3[idx].y;
+            pose.pose.position.z = 0.0;
 
-            // Append target lane continuation
-            if (!lc_path.empty())
-            {
-                const auto &last_pt = lc_path.back();
-                int to_idx = lane_to_int(target_lane_);
-                int target_closest = find_closest_idx(to_idx, last_pt.x, last_pt.y, true);
-                const auto &to_lane = processed_lanes_[to_idx];
-                int n = to_lane.size();
+            // Orientation 계산 (다음 점 방향)
+            int next_idx = (idx + 1) % n;
+            double yaw = std::atan2(lane3[next_idx].y - lane3[idx].y,
+                                    lane3[next_idx].x - lane3[idx].x);
+            pose.pose.orientation.z = std::sin(yaw / 2.0);
+            pose.pose.orientation.w = std::cos(yaw / 2.0);
 
-                for (int i = 1; i < 80; ++i)
-                {
-                    int idx = (target_closest + i) % n;
-                    geometry_msgs::msg::PoseStamped pose;
-                    pose.header = local_path_msg.header;
-                    pose.pose.position.x = to_lane[idx].x;
-                    pose.pose.position.y = to_lane[idx].y;
-                    pose.pose.position.z = 0.0;
-                    tf2::Quaternion q;
-                    q.setRPY(0, 0, to_lane[idx].yaw);
-                    pose.pose.orientation = tf2::toMsg(q);
-                    local_path_msg.poses.push_back(pose);
-                }
-            }
-        }
-        else
-        {
-            // Normal lane following
-            int lane_idx = lane_to_int(current_lane_);
-            const auto &lane = processed_lanes_[lane_idx];
-            int n = lane.size();
-
-            for (int i = 0; i < 100; ++i)
-            {
-                int idx = (closest + i) % n;
-                geometry_msgs::msg::PoseStamped pose;
-                pose.header = local_path_msg.header;
-                pose.pose.position.x = lane[idx].x;
-                pose.pose.position.y = lane[idx].y;
-                pose.pose.position.z = 0.0;
-                tf2::Quaternion q;
-                q.setRPY(0, 0, lane[idx].yaw);
-                pose.pose.orientation = tf2::toMsg(q);
-                local_path_msg.poses.push_back(pose);
-            }
+            local_path_msg.poses.push_back(pose);
         }
 
+        // 7. Publish
         local_pub_->publish(local_path_msg);
 
-        // Publish target velocity
-        double target_vel = compute_velocity();
-        std_msgs::msg::Float32 vel_msg;
-        vel_msg.data = target_vel;
-        target_vel_pub_->publish(vel_msg);
+        std_msgs::msg::Float32 v_msg;
+        v_msg.data = static_cast<float>(target_vel);
+        target_vel_pub_->publish(v_msg);
 
-        // Publish debug markers
-        publish_debug_markers();
+        // 8. Logging
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                             "[%s] idx=%d, vel=%.2f, ego_spd=%.2f",
+                             state_str.c_str(), ego_idx, target_vel, ego_speed_);
     }
 
     // ============================================================================
-    // VISUALIZATION
+    // CALLBACKS
     // ============================================================================
 
-    void LocalPathPubCpp::publish_debug_markers()
+    void LocalPathPubCpp::process_lane_path(int lane_idx)
     {
-        visualization_msgs::msg::MarkerArray markers;
-        int id = 0;
+        if (!lane_paths_[lane_idx] || lane_paths_[lane_idx]->poses.empty())
+            return;
 
-        double cos_yaw = std::cos(ego_yaw_);
-        double sin_yaw = std::sin(ego_yaw_);
+        processed_lanes_[lane_idx].clear();
 
-        tf2::Quaternion q;
-        q.setRPY(0, 0, ego_yaw_);
-        auto quat_msg = tf2::toMsg(q);
-
-        // Front zone marker
-        visualization_msgs::msg::Marker m;
-        m.header.frame_id = "world";
-        m.header.stamp = this->now();
-        m.ns = "zones";
-        m.id = id++;
-        m.type = visualization_msgs::msg::Marker::CUBE;
-        m.action = visualization_msgs::msg::Marker::ADD;
-
-        double cx = FRONT_ZONE_LENGTH / 2;
-        m.pose.position.x = ego_x_ + cos_yaw * cx;
-        m.pose.position.y = ego_y_ + sin_yaw * cx;
-        m.pose.position.z = 0.02;
-        m.pose.orientation = quat_msg;
-
-        m.scale.x = FRONT_ZONE_LENGTH;
-        m.scale.y = FRONT_ZONE_WIDTH * 2;
-        m.scale.z = 0.01;
-
-        m.color.a = 0.4;
-        m.color.g = 1.0;
-
-        if (current_surrounding_.front_critical)
+        for (const auto &p : lane_paths_[lane_idx]->poses)
         {
-            m.color.r = 1.0;
-            m.color.g = 0.0;
+            PathPoint pt;
+            pt.x = p.pose.position.x;
+            pt.y = p.pose.position.y;
+            processed_lanes_[lane_idx].push_back(pt);
         }
 
-        markers.markers.push_back(m);
-        debug_pub_->publish(markers);
+        // RCLCPP_INFO(this->get_logger(), "Lane %d loaded: %zu points",
+        //             lane_idx, processed_lanes_[lane_idx].size());
+
+        // 인덱스 초기화
+        last_idx_[lane_idx] = -1;
+        topology_analyzed_ = false;
+    }
+
+    void LocalPathPubCpp::obstacle_callback(const visualization_msgs::msg::MarkerArray::SharedPtr msg)
+    {
+        double now_s = this->now().seconds();
+
+        for (const auto &mk : msg->markers)
+        {
+            if (mk.ns != "surrounding_cars")
+                continue;
+            if (mk.type != visualization_msgs::msg::Marker::CUBE)
+                continue;
+
+            int id = mk.id;
+            ObstacleInfo &obs = obstacles_[id];
+
+            // 속도 계산 (위치 미분)
+            if (obs.last_seen_sec > 0)
+            {
+                double dt = now_s - obs.last_seen_sec;
+                if (dt > 0.01 && dt < 1.0)
+                {
+                    double new_vx = (mk.pose.position.x - obs.x) / dt;
+                    double new_vy = (mk.pose.position.y - obs.y) / dt;
+
+                    // Low-pass filter
+                    obs.vx = obs.vx * 0.5 + new_vx * 0.5;
+                    obs.vy = obs.vy * 0.5 + new_vy * 0.5;
+                }
+            }
+
+            obs.id = id;
+            obs.x = mk.pose.position.x;
+            obs.y = mk.pose.position.y;
+            obs.speed = std::hypot(obs.vx, obs.vy);
+            obs.lane = get_lane_at(obs.x, obs.y);
+            obs.last_seen_sec = now_s;
+        }
+
+        // Stale obstacle 제거
+        for (auto it = obstacles_.begin(); it != obstacles_.end();)
+        {
+            if ((now_s - it->second.last_seen_sec) > 2.0)
+                it = obstacles_.erase(it);
+            else
+                ++it;
+        }
+    }
+
+    void LocalPathPubCpp::pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+    {
+        double now_s = this->now().seconds();
+
+        double new_x = msg->pose.position.x;
+        double new_y = msg->pose.position.y;
+
+        // Yaw from quaternion (simplified: assuming 2D)
+        // 시뮬레이터에서 orientation.z가 yaw일 수 있음
+        double siny = 2.0 * (msg->pose.orientation.w * msg->pose.orientation.z +
+                             msg->pose.orientation.x * msg->pose.orientation.y);
+        double cosy = 1.0 - 2.0 * (msg->pose.orientation.y * msg->pose.orientation.y +
+                                   msg->pose.orientation.z * msg->pose.orientation.z);
+        ego_yaw_ = std::atan2(siny, cosy);
+
+        // Speed 계산
+        if (prev_pose_time_ > 0)
+        {
+            double dt = now_s - prev_pose_time_;
+            if (dt > 0.01 && dt < 0.5)
+            {
+                double dist = get_dist(new_x, new_y, ego_x_, ego_y_);
+                double raw_speed = dist / dt;
+
+                // 진행 방향 확인 (헤딩과 이동 방향 비교)
+                double move_angle = std::atan2(new_y - ego_y_, new_x - ego_x_);
+                double angle_diff = normalize_angle(move_angle - ego_yaw_);
+                if (std::abs(angle_diff) > M_PI / 2.0)
+                    raw_speed = -raw_speed; // 후진 감지
+
+                ego_speed_ = ego_speed_ * 0.7 + raw_speed * 0.3; // Low-pass filter
+            }
+        }
+
+        ego_x_ = new_x;
+        ego_y_ = new_y;
+        prev_pose_time_ = now_s;
+        pose_received_ = true;
     }
 
 } // namespace bisa
@@ -1310,11 +625,11 @@ namespace bisa
 // ============================================================================
 // MAIN
 // ============================================================================
-
 int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<bisa::LocalPathPubCpp>());
+    auto node = std::make_shared<bisa::LocalPathPubCpp>();
+    rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
 }
