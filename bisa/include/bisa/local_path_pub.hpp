@@ -114,7 +114,7 @@ namespace bisa
         bool in_split_gate(int idx);
 
         // 합류 Gap 분석
-        MergeGapInfo analyze_merge_gap();
+        MergeGapInfo analyze_gap(LaneID target_lane);
 
         // Lap Info
         int count_lap_idx(int lane_idx, double x, double y);
