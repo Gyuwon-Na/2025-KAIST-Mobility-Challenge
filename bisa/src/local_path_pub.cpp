@@ -224,16 +224,17 @@ namespace bisa
 
         for (const auto &[id, obs] : obstacles_)
         {
-            // ★ 목표 차선의 장애물만 체크
             if (obs.lane != target_lane)
                 continue;
 
-            // 직사각형 안전 영역 체크
+            // [핵심 수정] Ego 차량 기준의 로컬 좌표를 사용하여 앞/뒤 판별
+            // 차량이 왼쪽(-x)으로 가고 있더라도 local_x > 0이면 내 진행 방향 앞입니다.
             double dx_ego = obs.x - ego_x_;
             double dy_ego = obs.y - ego_y_;
             double local_x = dx_ego * std::cos(ego_yaw_) + dy_ego * std::sin(ego_yaw_);
             double local_y = -dx_ego * std::sin(ego_yaw_) + dy_ego * std::cos(ego_yaw_);
 
+            // 주변 장애물(박스) 체크 (유지)
             bool in_front_range = (local_x > -SAFE_REAR && local_x < SAFE_FRONT);
             bool in_lateral_range = (std::abs(local_y) < SAFE_LATERAL);
 
@@ -243,33 +244,28 @@ namespace bisa
                 if (dist < closest_box_dist)
                 {
                     closest_box_dist = dist;
-                    danger_obs_id = id;
-                    danger_local_x = local_x;
-                    danger_local_y = local_y;
+                    // danger_local_x 등 변수 업데이트 (필요 시)
                 }
             }
 
-            // 게이트점 기준 앞/뒤 체크
-            double dx = obs.x - ref_x;
-            double dy = obs.y - ref_y;
-            double dist_long = dx * l_cos + dy * l_sin;
-
-            if (std::abs(dist_long) > MERGE_LOOKAHEAD)
+            // 탐색 범위 제한 (합류 지점 전후 탐색)
+            if (std::abs(local_x) > MERGE_LOOKAHEAD)
                 continue;
 
             double current_obs_speed = std::hypot(obs.vx, obs.vy);
 
-            if (dist_long > 0)
+            // [판단 기준 변경] l_cos를 곱한 dist_long 대신 local_x 직접 사용
+            if (local_x > 0) // 내 정면 (진행 방향 앞)
             {
-                if (dist_long < closest_front_dist)
+                if (local_x < closest_front_dist)
                 {
-                    closest_front_dist = dist_long;
+                    closest_front_dist = local_x;
                     front_vel = current_obs_speed;
                 }
             }
-            else
+            else // 내 후방 (진행 방향 뒤)
             {
-                double abs_dist = std::abs(dist_long);
+                double abs_dist = std::abs(local_x);
                 if (abs_dist < closest_rear_dist)
                 {
                     closest_rear_dist = abs_dist;
@@ -291,31 +287,13 @@ namespace bisa
                                 ? ((env_slow_vel_ > 0.1) ? env_slow_vel_ : 1.5)
                                 : ((env_fast_vel_ > 0.1) ? env_fast_vel_ : 2.0);
 
-        // [1단계] 직사각형 체크
-        if (closest_box_dist < 999.0)
-        {
-            info.gap_available = false;
-            if (closest_box_dist < 0.35)
-                info.recommended_vel = 0.0;
-            else if (closest_box_dist < 0.5)
-                info.recommended_vel = 0.3;
-            else
-                info.recommended_vel = 0.5;
-
-            RCLCPP_WARN(this->get_logger(),
-                        "[GAP-%s] BOX DANGER! obs=%d at (%.2f,%.2f), dist=%.2f, vel=%.2f",
-                        (target_lane == LaneID::LANE_2) ? "MERGE" : "SPLIT",
-                        danger_obs_id, danger_local_x, danger_local_y, closest_box_dist, info.recommended_vel);
-            return info;
-        }
-
         // [2단계] TTC 기반 판단
         bool front_ok = true;
         if (closest_front_dist < 999.0)
         {
             double front_moves = front_vel * ego_tta;
             double expected_front_gap = closest_front_dist + front_moves;
-            front_ok = (expected_front_gap > 0.5);
+            front_ok = (expected_front_gap > 0.4);
         }
 
         bool rear_ok = true;
@@ -364,12 +342,19 @@ namespace bisa
             }
             else if (!rear_ok)
             {
-                info.recommended_vel = std::min(2.0, flow_speed * 1.3);
+                if (info.rear_dist <= MARGIN_REAR)
+                {
+                    info.recommended_vel = 0.0;
+                }
+                else
+                    info.recommended_vel = std::min(2.0, 1.5 + (flow_speed * (info.rear_dist / 1.0)));
             }
             RCLCPP_WARN(this->get_logger(),
-                        "[GAP-%s] ADJUST - front_ok=%s, rear_ok=%s, vel=%.2f",
+                        "[GAP-%s] ADJUST - front_ok=%s(%.2f), rear_ok=%s(%.2f), vel=%.2f",
                         (target_lane == LaneID::LANE_2) ? "MERGE" : "SPLIT",
-                        front_ok ? "Y" : "N", rear_ok ? "Y" : "N", info.recommended_vel);
+                        front_ok ? "Y" : "N", info.front_dist,
+                        rear_ok ? "Y" : "N", info.rear_dist,
+                        info.recommended_vel);
         }
 
         return info;
@@ -439,131 +424,87 @@ namespace bisa
             }
         }
 
-        // 4. 속도 발행
+        // --------------------------------------------------------------------
+        // 4. 속도 결정 (구간별 분기)
+        // --------------------------------------------------------------------
         double target_vel = follow_speed;
 
-        if (obj_found)
+        // [구간 1] Merge Zone (합류 구간 내부)
+        if (is_in_merge_zone_)
         {
-            if (min_dist_ahead < 1.0)
+            if (obj_found)
             {
-                // [Case 1] 장애물 매우 가까움 (ACC 감속)
-                // [Case 1-1] 너무 가까우면(0.4m) 더 감속
-                if (min_dist_ahead <= 0.4)
+                // 앞뒤 장애물 거리 계산
+                double front_dist = 999.0;
+                double rear_dist = 999.0;
+
+                for (auto const &[id, obs] : obstacles_)
                 {
-                    target_vel = follow_speed * 0.7; // 간격 벌리기
+                    if (obs.lane != current_lane_id)
+                        continue;
+
+                    double dx = obs.x - ego_x_;
+                    double dy = obs.y - ego_y_;
+                    double local_x = dx * std::cos(ego_yaw_) + dy * std::sin(ego_yaw_);
+
+                    if (local_x > 0.0 && local_x < front_dist)
+                        front_dist = local_x;
+                    else if (local_x < 0.0 && std::abs(local_x) < rear_dist)
+                        rear_dist = std::abs(local_x);
                 }
-                else
-                {
-                    target_vel = follow_speed; // 그룹 속도 유지
-                }
+
+                // 앞뒤 간격 기반 속도 결정
+                double vel_for_front = follow_speed;
+                double vel_for_rear = follow_speed;
+
+                // 앞차 간격 부족 → 감속
+                if (front_dist < MERGE_ZONE_MIN_FRONT_GAP)
+                    vel_for_front = follow_speed * 0.8;
+
+                // 뒷차 간격 부족 → 가속
+                if (rear_dist < MERGE_ZONE_MIN_REAR_GAP)
+                    vel_for_rear = std::min(follow_speed * 1.3, 2.0);
+                else if (rear_dist < MERGE_ZONE_MIN_REAR_GAP * 1.5)
+                    vel_for_rear = std::min(follow_speed * 1.1, 2.0);
+
+                // 두 조건을 만족하는 최적 속도 (앞차 우선)
+                target_vel = std::min(vel_for_front, vel_for_rear);
+
+                RCLCPP_DEBUG(this->get_logger(),
+                             "[MERGE ZONE] front=%.2f, rear=%.2f, vel=%.2f",
+                             front_dist, rear_dist, target_vel);
             }
             else
             {
-                // [Case 2] 장애물이 있지만 멀리 있음 (1.0m 이상)
-                // [Case 2-1] 합류 구간이 아닐 때만 2.0으로 증속
-                if (!is_in_merge_zone_ && !is_in_merge_gate_)
-                {
-                    target_vel = 2.0;
-                }
-
-                // [Case 2-2] 합류 게이트 구간이면??  (= 합류할 시점 (merge index - 10 ~ merge index))
-                if (is_in_merge_gate_ || is_in_split_gate_)
-                {
-                    // 목표 차선 결정
-                    LaneID target_lane = is_in_merge_gate_ ? LaneID::LANE_2 : LaneID::LANE_3;
-
-                    MergeGapInfo gap_info = analyze_gap(target_lane);
-
-                    if (gap_info.gap_available)
-                    {
-                        // Gap 확보됨 → 권장 속도로 합류 준비
-                        target_vel = gap_info.recommended_vel;
-                        RCLCPP_DEBUG(this->get_logger(),
-                                     "[MERGE GATE] Gap OK: size=%.2f, front=%.2f, rear=%.2f, vel=%.2f",
-                                     gap_info.gap_size, gap_info.front_dist, gap_info.rear_dist, target_vel);
-                    }
-                    else
-                    {
-                        // Gap 부족 → 속도 줄여서 다음 gap 대기
-                        target_vel = gap_info.recommended_vel;
-                        RCLCPP_DEBUG(this->get_logger(),
-                                     "[MERGE GATE] Gap insufficient: size=%.2f, waiting...", gap_info.gap_size);
-                    }
-                }
-
-                // [Case 2-3] 합류 구간이면??
-                if (is_in_merge_zone_)
-                {
-                    // 합류했는데 장애물 있으면 상관 없지 않나? 이 때는 그냥 차선 그룹의 속도랑 유지하면 되지 않나?
-                    // 앞차와의 거리가 너무 가까우면 감속 (대신 뒷차와의 safe 거리도 고려하여 감속해야함)
-                    if (min_dist_ahead <= 0.2)
-                    {
-                        // 매우 가까움: 정지
-                        target_vel = 0.0;
-                        RCLCPP_ERROR(this->get_logger(),
-                                     "[MERGE ZONE] Extremely close! dist=%.2f, STOP!", min_dist_ahead);
-                    }
-                    if (min_dist_ahead <= 0.3)
-                    {
-                        // 너무 가까움: 강하게 감속해서 간격 벌리기
-                        target_vel = follow_speed * 0.5;
-                        RCLCPP_WARN(this->get_logger(),
-                                    "[MERGE ZONE] Too close! dist=%.2f, slowing to %.2f",
-                                    min_dist_ahead, target_vel);
-                    }
-                    else if (min_dist_ahead <= 0.5)
-                    {
-                        // 가까움: 약간 감속
-                        target_vel = follow_speed * 0.8;
-                    }
-                    else if (min_dist_ahead <= 0.8)
-                    {
-                        // 적정 거리: 그룹 속도 유지
-                        target_vel = follow_speed;
-                    }
-                    else
-                    {
-                        // 여유 있음: 약간 가속해서 간격 좁히기 (분기 대비)
-                        target_vel = std::min(follow_speed * 1.1, 2.0);
-                    }
-                }
+                target_vel = follow_speed;
             }
         }
+        // [구간 2] Merge Gate 또는 Split Gate
+        else if (is_in_merge_gate_ || is_in_split_gate_)
+        {
+            LaneID target_lane = is_in_merge_gate_ ? LaneID::LANE_2 : LaneID::LANE_3;
+            MergeGapInfo gap_info = analyze_gap(target_lane);
+            target_vel = gap_info.recommended_vel;
+
+            RCLCPP_DEBUG(this->get_logger(),
+                         "[GATE] gap=%.2f, available=%d, vel=%.2f",
+                         gap_info.gap_size, gap_info.gap_available, target_vel);
+        }
+        // [구간 3] 일반 구간
         else
         {
-            // [Case 3] 장애물 없음
-            // [Case 3-1] 합류 구간이 아닐 때만 2.0으로 증속
-            if (!is_in_merge_zone_ && (!is_in_merge_gate_ || !is_in_split_gate_))
+            if (obj_found && min_dist_ahead < BOOST_DIST)
+            {
+                target_vel = follow_speed;
+            }
+            else
             {
                 target_vel = 2.0;
             }
-
-            // [Case 3-2] 분기 게이트 구간이면?? (= 분기할 시점 (split index ~ split index + 10))
-            if (is_in_merge_gate_ || is_in_split_gate_)
-            {
-                // 목표 차선 결정
-                LaneID target_lane = is_in_merge_gate_ ? LaneID::LANE_2 : LaneID::LANE_3;
-
-                MergeGapInfo gap_info = analyze_gap(target_lane);
-
-                if (gap_info.gap_available)
-                {
-                    // Gap 확보됨 → 권장 속도로 합류 준비
-                    target_vel = gap_info.recommended_vel;
-                    RCLCPP_DEBUG(this->get_logger(),
-                                 "[SPLIT GATE] Gap OK: size=%.2f, front=%.2f, rear=%.2f, vel=%.2f",
-                                 gap_info.gap_size, gap_info.front_dist, gap_info.rear_dist, target_vel);
-                }
-                else
-                {
-                    // Gap 부족 → 속도 줄여서 다음 gap 대기
-                    target_vel = gap_info.recommended_vel;
-                    RCLCPP_DEBUG(this->get_logger(),
-                                 "[SPLIT GATE] Gap insufficient: size=%.2f, waiting...", gap_info.gap_size);
-                }
-            }
         }
 
+        // --------------------------------------------------------------------
+        // Publish Local Path
         const auto &lane3 = processed_lanes_[2];
         int path_size = lane3.size();
 

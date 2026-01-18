@@ -77,6 +77,11 @@ namespace bisa
         const double MIN_MERGE_GAP = 0.5;   // 최소 합류 gap (m)
         const double SAFE_MERGE_GAP = 0.8;  // 안전 합류 gap (m)
         const double MERGE_LOOKAHEAD = 3.0; // 합류 지점 전후 탐색 범위 (m)
+        const double BOOST_DIST = 1.0;      // 앞차와 거리 좁히기 위한 구간 (m)
+
+        // ★ 목표 간격 기반 속도 계산
+        const double TARGET_FRONT_GAP = 0.7; // 앞차와 유지할 목표 간격
+        const double K_GAP = 1.0;            // 비례 게인 (튜닝용)
 
         // 차량 크기
         const double VEH_F = 0.17;  // Ego 앞범퍼까지
@@ -90,18 +95,21 @@ namespace bisa
 
         // 안전 마진 (범퍼 간 최소 거리)
         const double MARGIN_FRONT = 0.5;
-        const double MARGIN_REAR = 0.4;
-        const double MARGIN_LATERAL = 0.15;
+        const double MARGIN_REAR = 0.2;
+        const double MARGIN_LATERAL = 0.17;
+        const double MERGE_ZONE_MIN_FRONT_GAP = 0.5; // 앞차와 최소 간격 (m)
+        const double MERGE_ZONE_MIN_REAR_GAP = 0.3;  // 뒷차와 최소 간격 (m)
 
         // 직사각형 크기 = 내 차량 + 상대 차량 + 마진
         const double SAFE_FRONT = VEH_F + OBS_R + MARGIN_FRONT;     // 0.17 + 0.16 + 0.25 = 0.58m
         const double SAFE_REAR = VEH_R + OBS_F + MARGIN_REAR;       // 0.16 + 0.17 + 0.20 = 0.53m
-        const double SAFE_LATERAL = VEH_W + OBS_W + MARGIN_LATERAL; // 0.075 + 0.075 + 0.15 = 0.25m
-
+        const double SAFE_LATERAL = VEH_W + OBS_W + MARGIN_LATERAL; // 0.075 + 0.075 + 0.15 = 0.3m
+        const int LANE3_FORWARD_OFFSET = 10;                        // 튜닝용
         // ========================================================================
         // CORE FUNCTIONS
         // ========================================================================
         int find_closest_idx_forward(int lane_idx, double x, double y);
+        int find_closest_idx_forward_heading(int lane_idx, double x, double y, double yaw);
 
         // Lane 판별
         LaneID get_lane_at(double x, double y);
@@ -109,6 +117,7 @@ namespace bisa
         double normalize_angle(double angle);
 
         // Zone 판별
+        bool is_initial_merge_safe();
         bool in_merge_zone(int idx);
         bool in_merge_gate(int idx);
         bool in_split_gate(int idx);
@@ -147,14 +156,15 @@ namespace bisa
         nav_msgs::msg::Path::SharedPtr lane_paths_[3];
         std::vector<PathPoint> processed_lanes_[3];
         std::map<int, ObstacleInfo> obstacles_;
-
+        int find_closest_forward_idx_in_lane3();
         // Ego State
         bool pose_received_ = false;
         double ego_x_ = 0.0, ego_y_ = 0.0, ego_yaw_ = 0.0, ego_speed_ = 0.0;
         double prev_pose_time_ = 0.0;
 
         // Index tracking
-        int last_closest_idx_ = -1;
+        int last_closest_idx_ = -1;       // lane2 전용
+        int last_closest_idx_lane3_ = -1; // lane3 전용 (기존 last_closest_idx_)
         double env_slow_vel_ = 0.0;
         double env_fast_vel_ = 0.0;
 
@@ -163,6 +173,20 @@ namespace bisa
         double total_distance_ = 0.0;
         rclcpp::Time lap_start_time_;
         int prev_track_idx_ = 0; // Lane 2 기준 이전 인덱스
+
+        // 멤버 변수 추가 (hpp 파일)
+        LaneID current_following_lane_ = LaneID::LANE_2; // 현재 추종 차선
+        bool initial_merge_done_ = false;                // 초기 합류 완료 여부
+
+        LaneID current_lane_id = LaneID::LANE_2; // 시작은 무조건 Lane 2
+        bool initial_lane_change_done_ = false;  // 차선 변경 완료 여부
+        double lane_change_cooldown_ = 0.0;      // 시작 직후 급격한 변경 방지용
+
+        // 차선 변경 판단 임계값
+        bool is_lane_change_safe(LaneID target_lane);
+        const double LANE_CHANGE_LOOKAHEAD = 0.7;  // 전방 1.5m 여유
+        const double LANE_CHANGE_LOOKBEHIND = 0.7; // 후방 1.0m 여유
+        const double LANE_CHANGE_COOLDOWN = 2.0;   // 변경 후 최소 유지 시간
     };
 
 } // namespace bisa
