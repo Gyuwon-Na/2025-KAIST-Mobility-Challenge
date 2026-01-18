@@ -720,9 +720,12 @@ namespace bisa
                                          "Lane Change Initiated: Heading is Good (%.2f rad)", ego_yaw_);
 
                     // 실제 차선 변경 완료 판단
-                    if (get_lane_at(ego_x_, ego_y_) == LaneID::LANE_3)
+                    if (get_lane_at(ego_x_, ego_y_) == LaneID::LANE_3 && std::abs(ego_yaw_) < 0.2)
                     {
                         initial_lane_change_done_ = true;
+
+                        // (선택) 로그로 확인
+                        RCLCPP_INFO(this->get_logger(), "Lane Change COMPLETE: Aligned (yaw=%.2f)", ego_yaw_);
                     }
 
                     return; // 차선 변경 로직 실행 시 아래 일반 주행 로직 Skip
