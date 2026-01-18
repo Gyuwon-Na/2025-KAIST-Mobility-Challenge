@@ -371,18 +371,23 @@ namespace bisa
             return;
 
         // --------------------------------------------------------------------
+        // Publish Local Path
+        LaneID current_lane_id = get_lane_at(ego_x_, ego_y_);
+        const auto &current_lane = processed_lanes_[static_cast<int>(current_lane_id)];
+        int path_size = current_lane.size();
+
+        // --------------------------------------------------------------------
         // Determine Velocity (안전성 + 속도 결정)
         // 속도 발행하기 전 경우에 따라 나눠서 처리
         // --------------------------------------------------------------------
         // 1. 현재 위치 찾기 (사용자님 로직 사용)
-        LaneID current_lane_id = get_lane_at(ego_x_, ego_y_);
 
-        if (current_lane_id == LaneID::NONE || current_lane_id == LaneID::LANE_1)
-        {
-            current_lane_id = LaneID::LANE_3;
-        }
+        // if (current_lane_id == LaneID::NONE || current_lane_id == LaneID::LANE_1)
+        // {
+        //     current_lane_id = LaneID::LANE_3;
+        // }
 
-        int ego_idx = find_closest_idx_forward(2, ego_x_, ego_y_);
+        int ego_idx = find_closest_idx_forward(static_cast<int>(current_lane_id), ego_x_, ego_y_);
 
         // 2. 목표 속도 결정 (내가 위치한 차선 기준)
         double follow_speed = 2.0;
@@ -504,11 +509,6 @@ namespace bisa
         }
 
         // --------------------------------------------------------------------
-        // Publish Local Path
-        const auto &lane3 = processed_lanes_[2];
-        int path_size = lane3.size();
-
-        // --------------------------------------------------------------------
         // Path Generation (최소 길이 보장)
         // 속도가 줄어도 경로가 너무 짧아지지 않도록 최소 50개 점은 무조건 생성
         // --------------------------------------------------------------------
@@ -529,8 +529,8 @@ namespace bisa
 
             geometry_msgs::msg::PoseStamped pose;
             pose.header = local_path_msg.header;
-            pose.pose.position.x = lane3[idx].x;
-            pose.pose.position.y = lane3[idx].y;
+            pose.pose.position.x = current_lane[idx].x;
+            pose.pose.position.y = current_lane[idx].y;
             pose.pose.orientation.w = 1.0;
             local_path_msg.poses.push_back(pose);
         }

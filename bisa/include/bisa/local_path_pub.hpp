@@ -79,10 +79,6 @@ namespace bisa
         const double MERGE_LOOKAHEAD = 3.0; // 합류 지점 전후 탐색 범위 (m)
         const double BOOST_DIST = 1.0;      // 앞차와 거리 좁히기 위한 구간 (m)
 
-        // ★ 목표 간격 기반 속도 계산
-        const double TARGET_FRONT_GAP = 0.7; // 앞차와 유지할 목표 간격
-        const double K_GAP = 1.0;            // 비례 게인 (튜닝용)
-
         // 차량 크기
         const double VEH_F = 0.17;  // Ego 앞범퍼까지
         const double VEH_R = 0.16;  // Ego 뒷범퍼까지
@@ -95,10 +91,12 @@ namespace bisa
 
         // 안전 마진 (범퍼 간 최소 거리)
         const double MARGIN_FRONT = 0.5;
-        const double MARGIN_REAR = 0.2;
+        const double MARGIN_REAR = 0.3;
         const double MARGIN_LATERAL = 0.17;
+
+        // Merge Zone 최소 간격 기준
         const double MERGE_ZONE_MIN_FRONT_GAP = 0.5; // 앞차와 최소 간격 (m)
-        const double MERGE_ZONE_MIN_REAR_GAP = 0.3;  // 뒷차와 최소 간격 (m)
+        const double MERGE_ZONE_MIN_REAR_GAP = 0.2;  // 뒷차와 최소 간격 (m)
 
         // 직사각형 크기 = 내 차량 + 상대 차량 + 마진
         const double SAFE_FRONT = VEH_F + OBS_R + MARGIN_FRONT;     // 0.17 + 0.16 + 0.25 = 0.58m
