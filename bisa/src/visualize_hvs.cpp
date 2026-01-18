@@ -268,31 +268,31 @@ void ObstacleRelay::timer_callback()
         marker.lifetime = rclcpp::Duration::from_seconds(0.2);
         marker_array.markers.push_back(marker);
 
-        // [디버깅용 텍스트] 속도와 기준값 표시
-        visualization_msgs::msg::Marker text;
-        text.header.frame_id = "world";
-        text.header.stamp = now;
-        text.ns = "car_info";
-        text.id = id_cnt + 1000;
-        text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-        text.action = visualization_msgs::msg::Marker::ADD;
-        text.pose.position.x = data.x;
-        text.pose.position.y = data.y;
-        text.pose.position.z = 0.5;
-        text.scale.z = 0.25;
-        text.color.r = 1.0;
-        text.color.g = 1.0;
-        text.color.b = 1.0;
-        text.color.a = 1.0;
+        // // [디버깅용 텍스트] 속도와 기준값 표시
+        // visualization_msgs::msg::Marker text;
+        // text.header.frame_id = "world";
+        // text.header.stamp = now;
+        // text.ns = "car_info";
+        // text.id = id_cnt + 1000;
+        // text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        // text.action = visualization_msgs::msg::Marker::ADD;
+        // text.pose.position.x = data.x;
+        // text.pose.position.y = data.y;
+        // text.pose.position.z = 0.5;
+        // text.scale.z = 0.25;
+        // text.color.r = 1.0;
+        // text.color.g = 1.0;
+        // text.color.b = 1.0;
+        // text.color.a = 1.0;
 
-        std::stringstream ss;
-        ss << data.type << "\n"
-           << std::fixed << std::setprecision(2) << data.vel // 소수점 2자리로 변경
-           << " | T:" << vel_slow_thres_;
+        // std::stringstream ss;
+        // ss << data.type << "\n"
+        //    << std::fixed << std::setprecision(2) << data.vel // 소수점 2자리로 변경
+        //    << " | T:" << vel_slow_thres_;
 
-        text.text = ss.str();
-        text.lifetime = rclcpp::Duration::from_seconds(0.2);
-        marker_array.markers.push_back(text);
+        // text.text = ss.str();
+        // text.lifetime = rclcpp::Duration::from_seconds(0.2);
+        // marker_array.markers.push_back(text);
     }
     marker_pub_->publish(marker_array);
 }
