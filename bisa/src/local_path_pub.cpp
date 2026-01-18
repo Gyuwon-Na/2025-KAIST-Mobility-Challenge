@@ -644,77 +644,88 @@ namespace bisa
         LaneID current_lane_id = get_lane_at(ego_x_, ego_y_);
         const auto &current_lane = processed_lanes_[static_cast<int>(current_lane_id)];
         int path_size = current_lane.size();
+        double cur_cos = std::cos(ego_yaw_);
+        double cur_sin = std::sin(ego_yaw_);
 
-        if (!initial_lane_change_done_)
+        // 차선 변경 시도 조건: 아직 변경 안 했고, 헤딩이 안정적(직선)일 때
+        if (!initial_lane_change_done_ && std::abs(ego_yaw_) < 0.5)
         {
+            // [수정 1] 함수 인자는 1개만 넣어야 함 (hpp 정의에 따름)
             bool safe = is_lane_change_safe(LaneID::LANE_3);
             publish_safety_zone_visual(safe);
 
             if (safe)
             {
-                // [핵심 1] Lane 3에서 내 전방의 가장 가까운 점(Target WP) 직접 찾기
+                // 1. Lane 2에서의 내 위치(인덱스) 찾기
+                int current_lane_idx = find_closest_idx_forward(1, ego_x_, ego_y_);
+                const auto &lane3 = processed_lanes_[2];
+                int lane3_size = lane3.size();
+
                 int best_idx = -1;
-                double min_d = 1e9;
-                const auto &lane3 = processed_lanes_[2]; // Lane 3 데이터 직접 참조
-                for (size_t i = 0; i < lane3.size(); ++i)
+                double min_d_sq = 1e9;
+
+                // 2. 검색 범위 제한 (내 위치 기준 -10 ~ +100)
+                int search_start = current_lane_idx - 10;
+                int search_end = current_lane_idx + 100;
+
+                for (int i = search_start; i < search_end; ++i)
                 {
-                    // 1. 내 현재 위치에서 웨이포인트까지의 거리 벡터
-                    double dx = lane3[i].x - ego_x_;
-                    double dy = lane3[i].y - ego_y_;
-                    double d = std::hypot(dx, dy);
+                    int idx = (i + lane3_size) % lane3_size; // 인덱스 순환 처리
 
-                    // 2. 내 헤딩(Yaw) 기준 로컬 좌표계로 변환
-                    // local_x: 내 차가 바라보는 방향으로의 거리
-                    double local_x = dx * std::cos(ego_yaw_) + dy * std::sin(ego_yaw_);
+                    double dx = lane3[idx].x - ego_x_;
+                    double dy = lane3[idx].y - ego_y_;
 
-                    // [해결 핵심]
-                    // local_x가 최소 0.5m 이상 앞선 점들 중에서만 가장 가까운 점을 찾음
-                    // 이렇게 하면 내 뒤에 있는 점(-5 방향)은 절대 선택되지 않습니다.
+                    // [수정 2] 위에서 선언한 지역 변수(cur_cos, cur_sin) 사용
+                    double local_x = dx * cur_cos + dy * cur_sin;
+
+                    // 조건: 내 차보다 0.5m 앞에 있는 점 중에서 가장 가까운 점
                     if (local_x > 0.5)
                     {
-                        if (d < min_d)
+                        double d_sq = dx * dx + dy * dy;
+                        if (d_sq < min_d_sq)
                         {
-                            min_d = d;
-                            best_idx = i;
+                            min_d_sq = d_sq;
+                            best_idx = idx;
                         }
                     }
                 }
 
+                // 적절한 타겟을 찾았다면 경로 생성 및 진입
                 if (best_idx != -1)
                 {
-                    // [핵심 2] Lane 3 경로 생성
                     nav_msgs::msg::Path l3_path_msg;
                     l3_path_msg.header.frame_id = "world";
                     l3_path_msg.header.stamp = this->now();
 
-                    int lookahead_steps = 100; // 차선 변경 시에는 경로를 길게 주는 것이 안정적임
+                    int lookahead_steps = 100;
+                    l3_path_msg.poses.reserve(lookahead_steps);
+
                     for (int i = 0; i < lookahead_steps; ++i)
                     {
-                        int idx = (best_idx + i) % lane3.size();
+                        int idx = (best_idx + i) % lane3_size;
                         geometry_msgs::msg::PoseStamped ps;
-                        ps.header = l3_path_msg.header;
                         ps.pose.position.x = lane3[idx].x;
                         ps.pose.position.y = lane3[idx].y;
                         ps.pose.orientation.w = 1.0;
                         l3_path_msg.poses.push_back(ps);
                     }
 
-                    pub_local_path_->publish(l3_path_msg); // Lane 3 경로 발행
+                    pub_local_path_->publish(l3_path_msg);
 
-                    // 목표 속도 발행 (차선 변경 시에는 약간 감속하는 것이 뒷차와의 충돌 방지에 유리함)
                     std_msgs::msg::Float32 v_msg;
-                    v_msg.data = env_slow_vel_; // 혹은 analyze_merge_gap().recommended_vel
+                    v_msg.data = env_slow_vel_; // 차선 변경 시에는 감속 권장
                     pub_target_vel_->publish(v_msg);
 
-                    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Lane Change: Publishing Lane 3 Path...");
+                    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                         "Lane Change Initiated: Heading is Good (%.2f rad)", ego_yaw_);
 
-                    // 실제 진입 확인 및 플래그 업데이트
+                    // 실제 차선 변경 완료 판단
                     if (get_lane_at(ego_x_, ego_y_) == LaneID::LANE_3)
                     {
                         initial_lane_change_done_ = true;
                     }
 
-                    return; // 이번 루프 종료 (아래의 일반 주행 로직 실행 방지)
+                    return; // 차선 변경 로직 실행 시 아래 일반 주행 로직 Skip
                 }
             }
         }
