@@ -53,7 +53,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        links: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -65,8 +65,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        car_info: true
-        surrounding_cars: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -136,6 +135,18 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /viz/safety_zone
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Marker
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /planning/safety_zone
       Value: true
   Enabled: true
   Global Options:
@@ -214,5 +225,5 @@ Window Geometry:
   Views:
     collapsed: true
   Width: 962
-  X: 399
-  Y: 357
+  X: 367
+  Y: 325

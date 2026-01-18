@@ -71,7 +71,7 @@ namespace bisa
         // ========================================================================
         const int FIXED_MERGE_IDX = 1500;
         const int FIXED_SPLIT_IDX = 2281;
-        const int MERGE_ZONE_THRESHOLD = 100; // +/- 40점 이내는 합류/분기 구간으로 간주
+        const int MERGE_THRESHOLD = 50; // +/- 40점 이내는 합류/분기 구간으로 간주
         const int SPLIT_THRESHOLD = 50;
 
         // Merge Zone parameters
@@ -80,6 +80,11 @@ namespace bisa
         const double MERGE_LOOKAHEAD = 3.0; // 합류 지점 전후 탐색 범위 (m)
         const double BOOST_DIST = 1.0;      // 앞차와 거리 좁히기 위한 구간 (m)
 
+        // 최소 간격 제한 (하드 코딩)
+        const double MIN_FRONT_GAP = 0.3; // 앞차 최소 간격
+        const double MIN_REAR_GAP = 0.3;  // 뒷차 최소 간격
+        const double COMFORT_FRONT = 0.6; // 앞차 편안한 간격
+        const double COMFORT_REAR = 0.5;  // 뒷차 편안한 간격
         // 차량 크기
         const double VEH_F = 0.17;  // Ego 앞범퍼까지
         const double VEH_R = 0.16;  // Ego 뒷범퍼까지
@@ -120,10 +125,11 @@ namespace bisa
         bool in_merge_zone(int idx);
         bool in_merge_gate(int idx);
         bool in_split_gate(int idx);
-
+        // Merge Zone 속도 계산
+        double calculate_merge_zone_velocity(LaneID current_lane, double base_speed);
         // 합류 Gap 분석
-        MergeGapInfo analyze_gap(LaneID target_lane);
         MergeGapInfo analyze_split_gap();
+        MergeGapInfo analyze_merge_gap();
 
         // Lap Info
         int count_lap_idx(int lane_idx, double x, double y);
@@ -163,7 +169,9 @@ namespace bisa
         double prev_pose_time_ = 0.0;
 
         const std::set<int> FAST_HV_IDS = {0, 1, 2, 3};
+        const std::set<int> SLOW_HV_IDS = {4, 5, 6, 7, 8, 9, 10, 11};
         bool is_fast_hv(int id);
+        bool is_slow_hv(int id);
         // Index tracking
         int last_closest_idx_ = -1;       // lane2 전용
         int last_closest_idx_lane3_ = -1; // lane3 전용 (기존 last_closest_idx_)
@@ -189,6 +197,8 @@ namespace bisa
         const double LANE_CHANGE_LOOKAHEAD = 0.7;  // 전방 1.5m 여유
         const double LANE_CHANGE_LOOKBEHIND = 0.7; // 후방 1.0m 여유
         const double LANE_CHANGE_COOLDOWN = 2.0;   // 변경 후 최소 유지 시간
+        rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr pub_safety_zone_marker_;
+        void publish_safety_zone_visual(bool is_safe);
     };
 
 } // namespace bisa

@@ -50,11 +50,57 @@ namespace bisa
         pub_local_path_ = this->create_publisher<nav_msgs::msg::Path>("/local_path", 10);
         pub_target_vel_ = this->create_publisher<std_msgs::msg::Float32>("/planning/target_v", 10);
         pub_lap_info_ = this->create_publisher<bisa::msg::LapInfo>("/lap_information", 10);
-
+        pub_safety_zone_marker_ = this->create_publisher<visualization_msgs::msg::Marker>("/planning/safety_zone", 10);
         // Timer
         timer_ = this->create_wall_timer(std::chrono::milliseconds(20), std::bind(&LocalPathPubCpp::control_loop, this));
     }
+    void LocalPathPubCpp::publish_safety_zone_visual(bool is_safe)
+    {
+        visualization_msgs::msg::Marker marker;
+        marker.header.frame_id = "world"; // 또는 "ego_frame"이 있다면 상대 좌표로 설정 가능
+        marker.header.stamp = this->now();
+        marker.ns = "safety_zone";
+        marker.id = 0;
+        marker.type = visualization_msgs::msg::Marker::CUBE;
+        marker.action = visualization_msgs::msg::Marker::ADD;
 
+        // 1. 위치 설정 (내 차량 기준 우측 차선 중심)
+        // LANE_CHANGE_LOOKAHEAD와 LOOKBEHIND의 중간 지점이 박스의 중심이 됨
+        double center_x_local = (LANE_CHANGE_LOOKAHEAD - LANE_CHANGE_LOOKBEHIND) / 2.0;
+        double center_y_local = -0.375; // 차선 폭에 맞춰 조절 (우측으로 약 30~40cm)
+
+        // 로컬 좌표를 월드 좌표로 변환
+        marker.pose.position.x = ego_x_ + (center_x_local * std::cos(ego_yaw_) - center_y_local * std::sin(ego_yaw_));
+        marker.pose.position.y = ego_y_ + (center_x_local * std::sin(ego_yaw_) + center_y_local * std::cos(ego_yaw_));
+        marker.pose.position.z = 0.05; // 지면보다 살짝 위
+
+        // 내 차량의 헤딩과 맞춤
+        marker.pose.orientation.z = std::sin(ego_yaw_ / 2.0);
+        marker.pose.orientation.w = std::cos(ego_yaw_ / 2.0);
+
+        // 2. 크기 설정 (코드에서 사용하는 파라미터와 일치시킴)
+        marker.scale.x = LANE_CHANGE_LOOKAHEAD + LANE_CHANGE_LOOKBEHIND; // 종방향 길이
+        marker.scale.y = 0.65;                                           // 횡방향 너비 (local_y 범위: -0.05 ~ -0.7)
+        marker.scale.z = 0.1;
+
+        // 3. 색상 설정 (안전하면 초록색, 위험하면 빨간색)
+        if (is_safe)
+        {
+            marker.color.r = 0.0f;
+            marker.color.g = 1.0f;
+            marker.color.b = 0.0f;
+            marker.color.a = 0.4f;
+        }
+        else
+        {
+            marker.color.r = 1.0f;
+            marker.color.g = 0.0f;
+            marker.color.b = 0.0f;
+            marker.color.a = 0.6f;
+        }
+
+        pub_safety_zone_marker_->publish(marker);
+    }
     // ========================================================================
     // UTILS
     // ========================================================================
@@ -151,7 +197,7 @@ namespace bisa
 
     bool LocalPathPubCpp::in_merge_gate(int idx)
     {
-        return (idx >= FIXED_MERGE_IDX - MERGE_ZONE_THRESHOLD && idx <= FIXED_MERGE_IDX);
+        return (idx >= FIXED_MERGE_IDX - MERGE_THRESHOLD && idx <= FIXED_MERGE_IDX + MERGE_THRESHOLD);
     }
 
     bool LocalPathPubCpp::in_split_gate(int idx)
@@ -161,120 +207,109 @@ namespace bisa
 
     bool LocalPathPubCpp::in_merge_zone(int idx)
     {
-        return (idx > FIXED_MERGE_IDX && idx < FIXED_SPLIT_IDX - SPLIT_THRESHOLD);
+        return (idx > FIXED_MERGE_IDX + MERGE_THRESHOLD && idx < FIXED_SPLIT_IDX - SPLIT_THRESHOLD);
     }
 
     bool LocalPathPubCpp::is_fast_hv(int id)
     {
         return FAST_HV_IDS.find(id) != FAST_HV_IDS.end();
     }
+    bool LocalPathPubCpp::is_slow_hv(int id)
+    {
+        return SLOW_HV_IDS.find(id) != SLOW_HV_IDS.end();
+    }
 
-    MergeGapInfo LocalPathPubCpp::analyze_gap(LaneID target_lane)
+    // ========================================================================
+    // [NEW] Merge Gate 전용 Gap 분석 - Slow HV (ID 4~11) 집중 추적
+    // ========================================================================
+    MergeGapInfo LocalPathPubCpp::analyze_merge_gap()
     {
         MergeGapInfo info;
-        info.gap_available = true; // 기본: 통과 허용
+        info.gap_available = true;
         info.recommended_vel = (env_slow_vel_ > 0.1) ? env_slow_vel_ : 1.5;
 
         if (processed_lanes_[2].empty() || processed_lanes_[1].empty())
             return info;
 
-        // ★ 목표 차선에 따라 게이트 인덱스 결정
-        int gate_idx = (target_lane == LaneID::LANE_2) ? FIXED_MERGE_IDX : FIXED_SPLIT_IDX;
-        int target_lane_idx = (target_lane == LaneID::LANE_2) ? 1 : 2; // processed_lanes 인덱스
+        // Merge 지점 좌표 (Lane 2 기준으로 찾기)
+        double merge_x = processed_lanes_[2][FIXED_MERGE_IDX].x;
+        double merge_y = processed_lanes_[2][FIXED_MERGE_IDX].y;
 
-        // 1. 게이트 지점 좌표 (Lane 3 기준)
-        double gate_x = processed_lanes_[2][gate_idx].x;
-        double gate_y = processed_lanes_[2][gate_idx].y;
-
-        // 2. 목표 차선에서 게이트점 매칭
-        int target_lane_gate_idx = 0;
+        // Lane 2에서 merge 지점에 가장 가까운 점 찾기
+        int lane2_merge_idx = 0;
         double min_d = 999.0;
-        for (size_t i = 0; i < processed_lanes_[target_lane_idx].size(); i += 5)
+        for (size_t i = 0; i < processed_lanes_[1].size(); i += 5)
         {
-            double d = get_dist(gate_x, gate_y,
-                                processed_lanes_[target_lane_idx][i].x,
-                                processed_lanes_[target_lane_idx][i].y);
+            double d = get_dist(merge_x, merge_y, processed_lanes_[1][i].x, processed_lanes_[1][i].y);
             if (d < min_d)
             {
                 min_d = d;
-                target_lane_gate_idx = i;
+                lane2_merge_idx = i;
             }
         }
 
-        double ref_x = processed_lanes_[target_lane_idx][target_lane_gate_idx].x;
-        double ref_y = processed_lanes_[target_lane_idx][target_lane_gate_idx].y;
+        // Ego → Merge 지점까지 거리/시간
+        double ego_to_merge = get_dist(ego_x_, ego_y_, merge_x, merge_y);
+        double ego_speed_safe = std::max(ego_speed_, 0.3);
+        double ego_tta = ego_to_merge / ego_speed_safe;
 
-        // 목표 차선 방향 계산
-        int next_idx = std::min(target_lane_gate_idx + 5, (int)processed_lanes_[target_lane_idx].size() - 1);
-        double lane_dx = processed_lanes_[target_lane_idx][next_idx].x - ref_x;
-        double lane_dy = processed_lanes_[target_lane_idx][next_idx].y - ref_y;
-        double lane_yaw = std::atan2(lane_dy, lane_dx);
-        double l_cos = std::cos(lane_yaw);
-        double l_sin = std::sin(lane_yaw);
-
-        // 3. Ego가 합류 지점까지의 거리/시간
-        double ego_to_gate = get_dist(ego_x_, ego_y_, gate_x, gate_y);
-        double ego_speed_safe = std::max(ego_speed_, 0.5);
-        double ego_tta = ego_to_gate / ego_speed_safe;
-
-        // 4. 목표 차선 차량 탐색
+        // =========================================================
+        // [핵심] Slow HV (ID 4~11) 추적 - Lane 2 차량들
+        // =========================================================
         double closest_front_dist = 999.0;
         double closest_rear_dist = 999.0;
-        double closest_box_dist = 999.0;
         double front_vel = 0.0;
         double rear_vel = 0.0;
-        int danger_obs_id = -1;
-        double danger_local_x = 0.0;
-        double danger_local_y = 0.0;
+        int front_id = -1;
+        int rear_id = -1;
+        double front_tta = 999.0;
+        double rear_tta = 999.0;
 
         for (const auto &[id, obs] : obstacles_)
         {
-            if (obs.lane != target_lane)
+            // Lane 2 차량만 (Slow HV 우선, 하지만 모든 Lane 2 차량 체크)
+            if (obs.lane != LaneID::LANE_2)
                 continue;
 
-            // [핵심 수정] Ego 차량 기준의 로컬 좌표를 사용하여 앞/뒤 판별
-            // 차량이 왼쪽(-x)으로 가고 있더라도 local_x > 0이면 내 진행 방향 앞입니다.
-            double dx_ego = obs.x - ego_x_;
-            double dy_ego = obs.y - ego_y_;
-            double local_x = dx_ego * std::cos(ego_yaw_) + dy_ego * std::sin(ego_yaw_);
-            double local_y = -dx_ego * std::sin(ego_yaw_) + dy_ego * std::cos(ego_yaw_);
+            // HV → Merge 지점까지 거리
+            double hv_to_merge = get_dist(obs.x, obs.y, merge_x, merge_y);
+            double hv_speed = std::hypot(obs.vx, obs.vy);
+            double hv_speed_safe = std::max(hv_speed, 0.3);
+            double hv_tta = hv_to_merge / hv_speed_safe;
 
-            // 주변 장애물(박스) 체크 (유지)
-            bool in_front_range = (local_x > -SAFE_REAR && local_x < SAFE_FRONT);
-            bool in_lateral_range = (std::abs(local_y) < SAFE_LATERAL);
+            // Ego 기준 로컬 좌표
+            double dx = obs.x - ego_x_;
+            double dy = obs.y - ego_y_;
+            double local_x = dx * std::cos(ego_yaw_) + dy * std::sin(ego_yaw_);
+            double dist_to_ego = std::hypot(dx, dy);
 
-            if (in_front_range && in_lateral_range)
-            {
-                double dist = std::hypot(dx_ego, dy_ego);
-                if (dist < closest_box_dist)
-                {
-                    closest_box_dist = dist;
-                    // danger_local_x 등 변수 업데이트 (필요 시)
-                }
-            }
-
-            // 탐색 범위 제한 (합류 지점 전후 탐색)
-            if (std::abs(local_x) > MERGE_LOOKAHEAD)
+            // 탐색 범위: 전후 3m
+            if (std::abs(local_x) > 3.0)
                 continue;
 
-            double current_obs_speed = std::hypot(obs.vx, obs.vy);
+            RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 100,
+                                  "[MERGE] HV %d (slow=%d): local_x=%.2f, to_merge=%.2f, speed=%.2f, tta=%.2f",
+                                  id, is_slow_hv(id), local_x, hv_to_merge, hv_speed, hv_tta);
 
-            // [판단 기준 변경] l_cos를 곱한 dist_long 대신 local_x 직접 사용
-            if (local_x > 0) // 내 정면 (진행 방향 앞)
+            if (local_x > 0.1) // 전방
             {
                 if (local_x < closest_front_dist)
                 {
                     closest_front_dist = local_x;
-                    front_vel = current_obs_speed;
+                    front_vel = hv_speed;
+                    front_id = id;
+                    front_tta = hv_tta;
                 }
             }
-            else // 내 후방 (진행 방향 뒤)
+            else if (local_x < -0.1) // 후방
             {
                 double abs_dist = std::abs(local_x);
                 if (abs_dist < closest_rear_dist)
                 {
                     closest_rear_dist = abs_dist;
-                    rear_vel = current_obs_speed;
+                    rear_vel = hv_speed;
+                    rear_id = id;
+                    rear_tta = hv_tta;
                 }
             }
         }
@@ -284,82 +319,96 @@ namespace bisa
         info.front_vel = front_vel;
         info.rear_vel = rear_vel;
 
-        // =================================================================
-        // [핵심] TTC 기반 판단 - "지금 속도로 가면 부딪히나?"
-        // =================================================================
+        double flow_speed = (env_slow_vel_ > 0.1) ? env_slow_vel_ : 1.5;
 
-        double flow_speed = (target_lane == LaneID::LANE_2)
-                                ? ((env_slow_vel_ > 0.1) ? env_slow_vel_ : 1.5)
-                                : ((env_fast_vel_ > 0.1) ? env_fast_vel_ : 2.0);
+        // =========================================================
+        // [핵심] Gap 진입 전략 - 절대 멈추지 않고 조절
+        // =========================================================
 
-        // [2단계] TTC 기반 판단
-        bool front_ok = true;
-        if (closest_front_dist < 999.0)
-        {
-            double front_moves = front_vel * ego_tta;
-            double expected_front_gap = closest_front_dist + front_moves;
-            front_ok = (expected_front_gap > 0.4);
-        }
+        // 전방 차량과의 gap
+        double front_gap_time = (closest_front_dist < 999.0) ? (closest_front_dist / ego_speed_safe) : 999.0;
 
-        bool rear_ok = true;
-        if (closest_rear_dist < 999.0)
-        {
-            double rear_moves = rear_vel * ego_tta;
-            double expected_rear_gap = closest_rear_dist - rear_moves + (flow_speed * ego_tta);
-            rear_ok = (expected_rear_gap > 0.4);
-        }
+        // 후방 차량이 나를 따라잡는 시간
+        double rear_closing_speed = std::max(0.0, rear_vel - ego_speed_);
+        double rear_catch_time = (closest_rear_dist < 999.0 && rear_closing_speed > 0.01)
+                                     ? (closest_rear_dist / rear_closing_speed)
+                                     : 999.0;
 
-        // =================================================================
-        // 최종 판단
-        // =================================================================
-        if (front_ok && rear_ok)
+        // Case 1: 전방/후방 모두 여유 있음 → 정상 속도
+        if (closest_front_dist > 0.8 && closest_rear_dist > 0.6)
         {
             info.gap_available = true;
             info.recommended_vel = flow_speed;
-
-            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
-                                 "[GAP-%s] CLEAR - front=%.2f, rear=%.2f, vel=%.2f",
-                                 (target_lane == LaneID::LANE_2) ? "MERGE" : "SPLIT",
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 300,
+                                 "[MERGE] CLEAR - front=%.2f, rear=%.2f, vel=%.2f",
                                  closest_front_dist, closest_rear_dist, info.recommended_vel);
         }
-        else
+        // Case 2: 전방 가까움 → 감속하되 정지는 NO
+        else if (closest_front_dist < 0.8 && closest_front_dist < closest_rear_dist)
         {
             info.gap_available = false;
 
-            if (!front_ok)
+            if (closest_front_dist < 0.3)
             {
-                // ★ 최소 안전 거리 이하면 무조건 정지
-                if (info.front_dist <= MARGIN_FRONT)
-                {
-                    info.recommended_vel = 0.0;
-                }
-                else if (info.front_dist <= MARGIN_FRONT * 2)
-                {
-                    // 마진의 2배 이하면 매우 느리게
-                    info.recommended_vel = 0.3;
-                }
-                else
-                {
-                    // 그 외는 거리 비례 감속
-                    double slow_factor = std::clamp(info.front_dist / 1.0, 0.3, 0.6);
-                    info.recommended_vel = std::max(0.5, flow_speed * slow_factor);
-                }
+                // 매우 가까움 → 앞차 속도로 따라가기 (절대 정지 X)
+                info.recommended_vel = std::max(0.3, front_vel * 0.9);
             }
-            else if (!rear_ok)
+            else
             {
-                if (info.rear_dist <= MARGIN_REAR)
-                {
-                    info.recommended_vel = 0.0;
-                }
-                else
-                    info.recommended_vel = std::min(2.0, 1.5 + (flow_speed * (info.rear_dist / 1.0)));
+                // 적당히 가까움 → 살짝 감속
+                info.recommended_vel = std::max(0.5, flow_speed * 0.7);
             }
-            RCLCPP_WARN(this->get_logger(),
-                        "[GAP-%s] ADJUST - front_ok=%s(%.2f), rear_ok=%s(%.2f), vel=%.2f",
-                        (target_lane == LaneID::LANE_2) ? "MERGE" : "SPLIT",
-                        front_ok ? "Y" : "N", info.front_dist,
-                        rear_ok ? "Y" : "N", info.rear_dist,
-                        info.recommended_vel);
+
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 200,
+                                 "[MERGE] FRONT CLOSE (id=%d, dist=%.2f) → follow at %.2f",
+                                 front_id, closest_front_dist, info.recommended_vel);
+        }
+        // Case 3: 후방 가까움 → 가속해서 gap 확보
+        else if (closest_rear_dist < 0.6)
+        {
+            info.gap_available = false;
+
+            if (closest_rear_dist < 0.25)
+            {
+                // 매우 가까움 → 빨리 가속해서 빠져나가기
+                info.recommended_vel = std::min(2.0, flow_speed * 1.5);
+                RCLCPP_WARN(this->get_logger(),
+                            "[MERGE] REAR DANGER (id=%d, dist=%.2f) → ACCELERATE to %.2f",
+                            rear_id, closest_rear_dist, info.recommended_vel);
+            }
+            else if (closest_rear_dist < 0.4)
+            {
+                // 가까움 → 가속
+                info.recommended_vel = std::min(2.0, flow_speed * 1.3);
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 200,
+                                     "[MERGE] REAR CLOSE (id=%d, dist=%.2f) → speed up to %.2f",
+                                     rear_id, closest_rear_dist, info.recommended_vel);
+            }
+            else
+            {
+                // 약간 가까움 → 살짝 가속
+                info.recommended_vel = std::min(2.0, flow_speed * 1.1);
+            }
+        }
+        // Case 4: 둘 다 애매 → 상황에 맞게
+        else
+        {
+            // 전방이 더 여유 있으면 가속, 후방이 더 여유 있으면 감속
+            if (closest_front_dist > closest_rear_dist)
+            {
+                // 전방 여유 → 가속해서 gap 진입
+                info.recommended_vel = std::min(2.0, flow_speed * 1.2);
+            }
+            else
+            {
+                // 후방 여유 → 감속해서 뒤 gap으로
+                info.recommended_vel = std::max(0.5, flow_speed * 0.8);
+            }
+            info.gap_available = true;
+
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 300,
+                                 "[MERGE] ADJUSTING - front=%.2f, rear=%.2f, vel=%.2f",
+                                 closest_front_dist, closest_rear_dist, info.recommended_vel);
         }
 
         return info;
@@ -528,14 +577,66 @@ namespace bisa
 
         return info;
     }
+
+    // ========================================================================
+    // [NEW] Merge Zone 속도 계산 - 앞뒤 간격만 고려, 최대 속도 추구
+    // ========================================================================
+    double LocalPathPubCpp::calculate_merge_zone_velocity(LaneID current_lane, double base_speed)
+    {
+    }
+
     // ========================================================================
     // MAIN LOOP
     // ========================================================================
+
+    bool LocalPathPubCpp::is_lane_change_safe(LaneID target_lane)
+    {
+        // 1. 타겟 차선에 경로 데이터가 없으면 위험으로 간주
+        if (processed_lanes_[static_cast<int>(target_lane)].empty())
+            return false;
+
+        // 2. 안전 영역 파라미터 (상황에 맞게 조절 가능)
+        // 직사각형: 내 차 기준 전방 SAFE_FRONT, 후방 SAFE_REAR
+        // 측면: 타겟 차선과의 거리 (횡방향)
+
+        for (const auto &[id, obs] : obstacles_)
+        {
+            // 타겟 차선(Lane 3)에 있는 차량만 검사
+            if (obs.lane != target_lane)
+                continue;
+
+            // Ego 차량 기준 로컬 좌표계 변환
+            double dx = obs.x - ego_x_;
+            double dy = obs.y - ego_y_;
+
+            // 내 헤딩(ego_yaw_) 기준 종방향(longitudinal), 횡방향(lateral) 거리
+            double local_x = dx * std::cos(ego_yaw_) + dy * std::sin(ego_yaw_);
+            double local_y = -dx * std::sin(ego_yaw_) + dy * std::cos(ego_yaw_);
+
+            // [Safety Box 검사]
+            // 1. 종방향 체크: 내 차의 전방 SAFE_FRONT ~ 후방 SAFE_REAR 사이에 있는가?
+            bool in_longitudinal_range = (local_x < LANE_CHANGE_LOOKAHEAD) && (local_x > -LANE_CHANGE_LOOKBEHIND);
+
+            // 2. 횡방향 체크: 내 오른쪽 차선 범위에 있는가?
+            // (보통 차선 폭이 0.3~0.5m라면, 0.1 ~ 0.6m 사이를 검사)
+            bool in_lateral_range = (local_y < -0.05) && (local_y > -0.7);
+
+            if (in_longitudinal_range && in_lateral_range)
+            {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+                                     "[Safety Check] Unsafe! Obstacle ID %d detected in target zone (x: %.2f, y: %.2f)",
+                                     id, local_x, local_y);
+                return false; // 영역 내 장애물 발견 시 즉시 false
+            }
+        }
+
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[Safety Check] Clear to change lane.");
+        return true;
+    }
+
     void LocalPathPubCpp::control_loop()
     {
         if (!pose_received_)
-            return;
-        if (processed_lanes_[2].empty())
             return;
 
         // --------------------------------------------------------------------
@@ -544,17 +645,81 @@ namespace bisa
         const auto &current_lane = processed_lanes_[static_cast<int>(current_lane_id)];
         int path_size = current_lane.size();
 
-        // --------------------------------------------------------------------
-        // Determine Velocity (안전성 + 속도 결정)
-        // 속도 발행하기 전 경우에 따라 나눠서 처리
-        // --------------------------------------------------------------------
-        // 1. 현재 위치 찾기 (사용자님 로직 사용)
+        if (!initial_lane_change_done_)
+        {
+            bool safe = is_lane_change_safe(LaneID::LANE_3);
+            publish_safety_zone_visual(safe);
 
-        // if (current_lane_id == LaneID::NONE || current_lane_id == LaneID::LANE_1)
-        // {
-        //     current_lane_id = LaneID::LANE_3;
-        // }
+            if (safe)
+            {
+                // [핵심 1] Lane 3에서 내 전방의 가장 가까운 점(Target WP) 직접 찾기
+                int best_idx = -1;
+                double min_d = 1e9;
+                const auto &lane3 = processed_lanes_[2]; // Lane 3 데이터 직접 참조
+                for (size_t i = 0; i < lane3.size(); ++i)
+                {
+                    // 1. 내 현재 위치에서 웨이포인트까지의 거리 벡터
+                    double dx = lane3[i].x - ego_x_;
+                    double dy = lane3[i].y - ego_y_;
+                    double d = std::hypot(dx, dy);
 
+                    // 2. 내 헤딩(Yaw) 기준 로컬 좌표계로 변환
+                    // local_x: 내 차가 바라보는 방향으로의 거리
+                    double local_x = dx * std::cos(ego_yaw_) + dy * std::sin(ego_yaw_);
+
+                    // [해결 핵심]
+                    // local_x가 최소 0.5m 이상 앞선 점들 중에서만 가장 가까운 점을 찾음
+                    // 이렇게 하면 내 뒤에 있는 점(-5 방향)은 절대 선택되지 않습니다.
+                    if (local_x > 0.5)
+                    {
+                        if (d < min_d)
+                        {
+                            min_d = d;
+                            best_idx = i;
+                        }
+                    }
+                }
+
+                if (best_idx != -1)
+                {
+                    // [핵심 2] Lane 3 경로 생성
+                    nav_msgs::msg::Path l3_path_msg;
+                    l3_path_msg.header.frame_id = "world";
+                    l3_path_msg.header.stamp = this->now();
+
+                    int lookahead_steps = 100; // 차선 변경 시에는 경로를 길게 주는 것이 안정적임
+                    for (int i = 0; i < lookahead_steps; ++i)
+                    {
+                        int idx = (best_idx + i) % lane3.size();
+                        geometry_msgs::msg::PoseStamped ps;
+                        ps.header = l3_path_msg.header;
+                        ps.pose.position.x = lane3[idx].x;
+                        ps.pose.position.y = lane3[idx].y;
+                        ps.pose.orientation.w = 1.0;
+                        l3_path_msg.poses.push_back(ps);
+                    }
+
+                    pub_local_path_->publish(l3_path_msg); // Lane 3 경로 발행
+
+                    // 목표 속도 발행 (차선 변경 시에는 약간 감속하는 것이 뒷차와의 충돌 방지에 유리함)
+                    std_msgs::msg::Float32 v_msg;
+                    v_msg.data = env_slow_vel_; // 혹은 analyze_merge_gap().recommended_vel
+                    pub_target_vel_->publish(v_msg);
+
+                    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Lane Change: Publishing Lane 3 Path...");
+
+                    // 실제 진입 확인 및 플래그 업데이트
+                    if (get_lane_at(ego_x_, ego_y_) == LaneID::LANE_3)
+                    {
+                        initial_lane_change_done_ = true;
+                    }
+
+                    return; // 이번 루프 종료 (아래의 일반 주행 로직 실행 방지)
+                }
+            }
+        }
+
+        // 1. Ego 차량의 현재 위치 인덱스
         int ego_idx = find_closest_idx_forward(static_cast<int>(current_lane_id), ego_x_, ego_y_);
 
         // 2. 목표 속도 결정 (내가 위치한 차선 기준)
@@ -605,63 +770,18 @@ namespace bisa
         // [구간 1] Merge Zone (합류 구간 내부)
         if (is_in_merge_zone_)
         {
-            if (obj_found)
-            {
-                // 앞뒤 장애물 거리 계산
-                double front_dist = 999.0;
-                double rear_dist = 999.0;
-
-                for (auto const &[id, obs] : obstacles_)
-                {
-                    if (obs.lane != current_lane_id)
-                        continue;
-
-                    double dx = obs.x - ego_x_;
-                    double dy = obs.y - ego_y_;
-                    double local_x = dx * std::cos(ego_yaw_) + dy * std::sin(ego_yaw_);
-
-                    if (local_x > 0.0 && local_x < front_dist)
-                        front_dist = local_x;
-                    else if (local_x < 0.0 && std::abs(local_x) < rear_dist)
-                        rear_dist = std::abs(local_x);
-                }
-
-                // 앞뒤 간격 기반 속도 결정
-                double vel_for_front = follow_speed;
-                double vel_for_rear = follow_speed;
-
-                // 앞차 간격 부족 → 감속
-                if (front_dist < MERGE_ZONE_MIN_FRONT_GAP)
-                    vel_for_front = follow_speed * 0.8;
-
-                // 뒷차 간격 부족 → 가속
-                if (rear_dist < MERGE_ZONE_MIN_REAR_GAP)
-                    vel_for_rear = std::min(follow_speed * 1.3, 2.0);
-                else if (rear_dist < MERGE_ZONE_MIN_REAR_GAP * 1.5)
-                    vel_for_rear = std::min(follow_speed * 1.1, 2.0);
-
-                // 두 조건을 만족하는 최적 속도 (앞차 우선)
-                target_vel = std::min(vel_for_front, vel_for_rear);
-
-                RCLCPP_DEBUG(this->get_logger(),
-                             "[MERGE ZONE] front=%.2f, rear=%.2f, vel=%.2f",
-                             front_dist, rear_dist, target_vel);
-            }
-            else
-            {
-                target_vel = follow_speed;
-            }
+            target_vel = (env_slow_vel_ > 0.1) ? env_slow_vel_ : 1.5;
+            // 근데 이러니까 0.1~0.5 ㅈㄴ 왓다갓다 함 그래서 뒷차랑 점점 가까워지다가 결국 박음.
         }
         // [구간 2] Merge Gate 또는 Split Gate
         else if (is_in_merge_gate_)
         {
-            LaneID target_lane = is_in_merge_gate_ ? LaneID::LANE_2 : LaneID::LANE_3;
-            MergeGapInfo gap_info = analyze_gap(target_lane);
+            MergeGapInfo gap_info = analyze_merge_gap();
             target_vel = gap_info.recommended_vel;
 
             RCLCPP_DEBUG(this->get_logger(),
-                         "[GATE] gap=%.2f, available=%d, vel=%.2f",
-                         gap_info.gap_size, gap_info.gap_available, target_vel);
+                         "[MERGE GATE] front=%.2f, rear=%.2f, available=%d, vel=%.2f",
+                         gap_info.front_dist, gap_info.rear_dist, gap_info.gap_available, target_vel);
         }
         else if (is_in_split_gate_)
         {
