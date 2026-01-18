@@ -134,7 +134,7 @@ namespace bisa
     inline bool LocalPathPubCpp::in_merge_gate(int idx) const
     {
         return (idx >= FIXED_MERGE_IDX - MERGE_THRESHOLD) &&
-               (idx <= FIXED_MERGE_IDX + MERGE_THRESHOLD);
+               (idx <= FIXED_MERGE_IDX);
     }
 
     inline bool LocalPathPubCpp::in_split_gate(int idx) const
@@ -145,7 +145,7 @@ namespace bisa
 
     inline bool LocalPathPubCpp::in_merge_zone(int idx) const
     {
-        return (idx > FIXED_MERGE_IDX + MERGE_THRESHOLD) &&
+        return (idx > FIXED_MERGE_IDX) &&
                (idx < FIXED_SPLIT_IDX - SPLIT_THRESHOLD);
     }
 
