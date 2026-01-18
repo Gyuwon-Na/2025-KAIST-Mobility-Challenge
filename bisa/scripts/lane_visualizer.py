@@ -6,6 +6,8 @@ from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
+from ament_index_python.packages import get_package_share_directory
+
 import json
 import os
 
@@ -15,8 +17,8 @@ class LaneLoader(Node):
         super().__init__("lane_visualizer")
 
         # [설정] 파일 경로 (lanes.json)
-        home_dir = os.path.expanduser("~")
-        self.file_path = os.path.join(home_dir, "KAIST/bisa/hdmap_data/lanes.json")
+        pkg_dir = get_package_share_directory("bisa")
+        self.file_path = os.path.join(pkg_dir, "hdmap_data", "lanes.json")
 
         latched_qos = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         # 도로 시각화용

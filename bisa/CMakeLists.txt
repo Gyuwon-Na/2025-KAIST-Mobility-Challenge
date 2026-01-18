@@ -83,8 +83,6 @@ install(TARGETS
 
 install(PROGRAMS
   scripts/hdmap_visualizer.py
-  scripts/global_path_pub.py
-  scripts/dijkstra_planner.py
   scripts/mgeo_class_defs.py
   scripts/mpc_tuner_gui.py
   scripts/lane_visualizer.py

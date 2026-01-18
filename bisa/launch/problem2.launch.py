@@ -12,7 +12,6 @@ def generate_launch_description():
     # 파일 경로 설정
     rviz_config = os.path.join(pkg_dir, "rviz", "problem2.rviz")
     param_config = os.path.join(pkg_dir, "config", "mpc_params.yaml")
-    path_config = os.path.join(pkg_dir, "config", "path.yaml")
     bridge_config_path = os.path.join(pkg_dir, "config", "bridge_config.yaml")
 
     env_vars = os.environ.copy()
@@ -40,17 +39,6 @@ def generate_launch_description():
                 executable="hdmap_visualizer.py",
                 name="hdmap_visualizer",
                 output="screen",
-            ),
-            # 2. Global Path Publisher
-            Node(
-                package="bisa",
-                executable="global_path_pub.py",
-                name="global_path_publisher",
-                output="screen",
-                parameters=[
-                    path_config,
-                    {"target_problem": LaunchConfiguration("problem")},
-                ],
             ),
             Node(
                 package="bisa",
