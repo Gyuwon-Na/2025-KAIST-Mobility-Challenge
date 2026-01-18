@@ -72,6 +72,7 @@ namespace bisa
         const int FIXED_MERGE_IDX = 1500;
         const int FIXED_SPLIT_IDX = 2281;
         const int MERGE_ZONE_THRESHOLD = 100; // +/- 40점 이내는 합류/분기 구간으로 간주
+        const int SPLIT_THRESHOLD = 50;
 
         // Merge Zone parameters
         const double MIN_MERGE_GAP = 0.5;   // 최소 합류 gap (m)
@@ -122,6 +123,7 @@ namespace bisa
 
         // 합류 Gap 분석
         MergeGapInfo analyze_gap(LaneID target_lane);
+        MergeGapInfo analyze_split_gap();
 
         // Lap Info
         int count_lap_idx(int lane_idx, double x, double y);
@@ -160,6 +162,8 @@ namespace bisa
         double ego_x_ = 0.0, ego_y_ = 0.0, ego_yaw_ = 0.0, ego_speed_ = 0.0;
         double prev_pose_time_ = 0.0;
 
+        const std::set<int> FAST_HV_IDS = {0, 1, 2, 3};
+        bool is_fast_hv(int id);
         // Index tracking
         int last_closest_idx_ = -1;       // lane2 전용
         int last_closest_idx_lane3_ = -1; // lane3 전용 (기존 last_closest_idx_)

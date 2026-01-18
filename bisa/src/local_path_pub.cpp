@@ -156,12 +156,17 @@ namespace bisa
 
     bool LocalPathPubCpp::in_split_gate(int idx)
     {
-        return (idx >= FIXED_SPLIT_IDX && idx < FIXED_SPLIT_IDX + MERGE_ZONE_THRESHOLD);
+        return (idx >= FIXED_SPLIT_IDX - SPLIT_THRESHOLD && idx < FIXED_SPLIT_IDX + SPLIT_THRESHOLD);
     }
 
     bool LocalPathPubCpp::in_merge_zone(int idx)
     {
-        return (idx > FIXED_MERGE_IDX && idx < FIXED_SPLIT_IDX);
+        return (idx > FIXED_MERGE_IDX && idx < FIXED_SPLIT_IDX - SPLIT_THRESHOLD);
+    }
+
+    bool LocalPathPubCpp::is_fast_hv(int id)
+    {
+        return FAST_HV_IDS.find(id) != FAST_HV_IDS.end();
     }
 
     MergeGapInfo LocalPathPubCpp::analyze_gap(LaneID target_lane)
@@ -359,7 +364,170 @@ namespace bisa
 
         return info;
     }
+    // ========================================================================
+    // [NEW] Split Gate 전용 Gap 분석 - Fast HV (ID 0~3) 집중 추적
+    // ========================================================================
+    MergeGapInfo LocalPathPubCpp::analyze_split_gap()
+    {
+        MergeGapInfo info;
+        info.gap_available = true;
+        info.recommended_vel = (env_fast_vel_ > 0.1) ? env_fast_vel_ : 2.0;
 
+        if (processed_lanes_[2].empty())
+            return info;
+
+        // Split 지점 좌표
+        double split_x = processed_lanes_[2][FIXED_SPLIT_IDX].x;
+        double split_y = processed_lanes_[2][FIXED_SPLIT_IDX].y;
+
+        // Ego → Split 지점까지 거리/시간
+        double ego_to_split = get_dist(ego_x_, ego_y_, split_x, split_y);
+        double ego_speed_safe = std::max(ego_speed_, 0.3);
+        double ego_tta = ego_to_split / ego_speed_safe;
+
+        // =========================================================
+        // [핵심] Fast HV (ID 0~3)만 추적 - 위에서 내려오는 차량
+        // =========================================================
+        double closest_fast_hv_dist = 999.0;
+        double fast_hv_vel = 0.0;
+        int threatening_id = -1;
+        double threatening_tta = 999.0; // Fast HV가 합류 지점에 도착하는 시간
+
+        for (const auto &[id, obs] : obstacles_)
+        {
+            // Fast HV만 체크 (ID 0~3)
+            if (!is_fast_hv(id))
+                continue;
+
+            // Fast HV → Split 지점까지 거리
+            double hv_to_split = get_dist(obs.x, obs.y, split_x, split_y);
+            double hv_speed = std::hypot(obs.vx, obs.vy);
+            double hv_speed_safe = std::max(hv_speed, 0.5); // 최소 0.5로 가정
+            double hv_tta = hv_to_split / hv_speed_safe;
+
+            // Ego 기준 로컬 좌표 (디버깅용)
+            double dx = obs.x - ego_x_;
+            double dy = obs.y - ego_y_;
+            double local_x = dx * std::cos(ego_yaw_) + dy * std::sin(ego_yaw_);
+            double local_y = -dx * std::sin(ego_yaw_) + dy * std::cos(ego_yaw_);
+            double dist_to_ego = std::hypot(dx, dy);
+
+            RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 100,
+                                  "[SPLIT] Fast HV %d: to_split=%.2f, speed=%.2f, tta=%.2f, ego_tta=%.2f",
+                                  id, hv_to_split, hv_speed, hv_tta, ego_tta);
+
+            // 가장 위협적인 Fast HV 찾기 (합류 지점에 가장 빨리 도착하는 차량)
+            if (hv_to_split < 3.0) // 3m 이내에 있는 Fast HV만
+            {
+                if (hv_tta < threatening_tta)
+                {
+                    threatening_tta = hv_tta;
+                    threatening_id = id;
+                    closest_fast_hv_dist = dist_to_ego;
+                    fast_hv_vel = hv_speed;
+                }
+            }
+        }
+
+        // =========================================================
+        // [판단] TTA 비교 - 누가 먼저 도착하나?
+        // =========================================================
+        if (threatening_id >= 0)
+        {
+            // 시간 마진 (Fast HV가 먼저 도착해도 0.5초 이상 여유 필요)
+            double time_margin = 0.5;
+
+            // Case 1: 내가 훨씬 먼저 도착 (안전)
+            if (ego_tta + time_margin < threatening_tta)
+            {
+                info.gap_available = true;
+                info.recommended_vel = 2.0; // 빠르게 통과
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 300,
+                                     "[SPLIT] CLEAR - I arrive first (ego=%.2f, hv%d=%.2f)",
+                                     ego_tta, threatening_id, threatening_tta);
+            }
+            // Case 2: Fast HV가 먼저 또는 거의 동시 도착 (위험)
+            else if (threatening_tta < ego_tta + time_margin)
+            {
+                info.gap_available = false;
+
+                // 거리에 따른 속도 조절
+                if (closest_fast_hv_dist < 0.5)
+                {
+                    // 매우 가까움 → 정지
+                    info.recommended_vel = 0.0;
+                    RCLCPP_WARN(this->get_logger(),
+                                "[SPLIT] STOP! Fast HV %d too close (%.2fm)",
+                                threatening_id, closest_fast_hv_dist);
+                }
+                else if (closest_fast_hv_dist < 1.0)
+                {
+                    // 가까움 → 매우 느리게
+                    info.recommended_vel = 0.3;
+                    RCLCPP_WARN(this->get_logger(),
+                                "[SPLIT] SLOW! Fast HV %d nearby (%.2fm, tta=%.2f)",
+                                threatening_id, closest_fast_hv_dist, threatening_tta);
+                }
+                else
+                {
+                    // 여유 있음 → Fast HV 지나갈 때까지 대기 (느리게)
+                    // Fast HV 속도에 맞춰서 뒤따라가기
+                    info.recommended_vel = std::min(fast_hv_vel * 0.8, 1.0);
+                    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 300,
+                                         "[SPLIT] YIELD to Fast HV %d (dist=%.2f, following at %.2f)",
+                                         threatening_id, closest_fast_hv_dist, info.recommended_vel);
+                }
+            }
+            // Case 3: 애매함 → 보수적으로
+            else
+            {
+                info.gap_available = true;
+                info.recommended_vel = 1.5; // 중간 속도
+            }
+
+            info.front_dist = closest_fast_hv_dist;
+            info.front_vel = fast_hv_vel;
+        }
+        else
+        {
+            // Fast HV 없음 → 안전하게 통과
+            info.gap_available = true;
+            info.recommended_vel = 2.0;
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+                                 "[SPLIT] No Fast HV nearby - GO!");
+        }
+
+        // =========================================================
+        // [추가] Lane 2 차량도 체크 (Split 전까지는 Lane 2에 있으므로)
+        // =========================================================
+        for (const auto &[id, obs] : obstacles_)
+        {
+            if (obs.lane != LaneID::LANE_2)
+                continue;
+            if (is_fast_hv(id)) // Fast HV는 위에서 처리함
+                continue;
+
+            double dx = obs.x - ego_x_;
+            double dy = obs.y - ego_y_;
+            double local_x = dx * std::cos(ego_yaw_) + dy * std::sin(ego_yaw_);
+
+            // 전방 0~1.5m에 Lane 2 차량 있으면 감속
+            if (local_x > 0.0 && local_x < 1.5)
+            {
+                double dist = std::hypot(dx, dy);
+                if (dist < 0.5)
+                {
+                    info.recommended_vel = std::min(info.recommended_vel, 0.5);
+                }
+                else if (dist < 1.0)
+                {
+                    info.recommended_vel = std::min(info.recommended_vel, 1.0);
+                }
+            }
+        }
+
+        return info;
+    }
     // ========================================================================
     // MAIN LOOP
     // ========================================================================
@@ -485,7 +653,7 @@ namespace bisa
             }
         }
         // [구간 2] Merge Gate 또는 Split Gate
-        else if (is_in_merge_gate_ || is_in_split_gate_)
+        else if (is_in_merge_gate_)
         {
             LaneID target_lane = is_in_merge_gate_ ? LaneID::LANE_2 : LaneID::LANE_3;
             MergeGapInfo gap_info = analyze_gap(target_lane);
@@ -494,6 +662,15 @@ namespace bisa
             RCLCPP_DEBUG(this->get_logger(),
                          "[GATE] gap=%.2f, available=%d, vel=%.2f",
                          gap_info.gap_size, gap_info.gap_available, target_vel);
+        }
+        else if (is_in_split_gate_)
+        {
+            MergeGapInfo gap_info = analyze_split_gap();
+            target_vel = gap_info.recommended_vel;
+
+            RCLCPP_DEBUG(this->get_logger(),
+                         "[SPLIT GATE] fast_hv_dist=%.2f, available=%d, vel=%.2f",
+                         gap_info.front_dist, gap_info.gap_available, target_vel);
         }
         // [구간 3] 일반 구간
         else
