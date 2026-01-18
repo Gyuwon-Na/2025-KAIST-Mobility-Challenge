@@ -218,53 +218,6 @@ namespace bisa
         return best_idx;
     }
 
-    int LocalPathPubCpp::find_closest_forward_idx_in_lane3()
-    {
-        const auto &lane3 = processed_lanes_[2];
-        if (lane3.empty())
-            return 0;
-
-        const int path_size = static_cast<int>(lane3.size());
-
-        // 최초: 전체 탐색
-        if (last_closest_idx_lane3_ < 0)
-        {
-            double min_d_sq = 1e18;
-            int min_idx = 0;
-
-            for (int i = 0; i < path_size; ++i)
-            {
-                const double d_sq = get_dist_sq(ego_x_, ego_y_, lane3[i].x, lane3[i].y);
-                if (d_sq < min_d_sq)
-                {
-                    min_d_sq = d_sq;
-                    min_idx = i;
-                }
-            }
-            last_closest_idx_lane3_ = min_idx;
-            return min_idx;
-        }
-
-        // 윈도우 검색
-        int best_idx = last_closest_idx_lane3_;
-        double min_d_sq = 1e18;
-
-        for (int i = 0; i < SEARCH_WINDOW; ++i)
-        {
-            const int idx = (last_closest_idx_lane3_ + i) % path_size;
-            const double d_sq = get_dist_sq(ego_x_, ego_y_, lane3[idx].x, lane3[idx].y);
-
-            if (d_sq < min_d_sq)
-            {
-                min_d_sq = d_sq;
-                best_idx = idx;
-            }
-        }
-
-        last_closest_idx_lane3_ = best_idx;
-        return best_idx;
-    }
-
     // ============================================================================
     // LANE DETECTION
     // ============================================================================
@@ -927,21 +880,40 @@ namespace bisa
         }
 
         // ========================================================================
-        // Path Generation
+        // Path Generation (수정된 버전)
         // ========================================================================
         nav_msgs::msg::Path local_path_msg;
         local_path_msg.header.frame_id = "world";
         local_path_msg.header.stamp = this->now();
 
         const double current_speed = std::abs(ego_speed_);
-        int lookahead_steps = std::max(50, static_cast<int>((current_speed * 1.5) / 0.1));
-        lookahead_steps = std::min(lookahead_steps, 150);
+
+        // [수정 3] Pre-merge zone 체크를 인라인으로 처리 (함수 없이)
+        const bool is_pre_merge = (ego_idx >= FIXED_MERGE_IDX - 200) &&
+                                  (ego_idx < FIXED_MERGE_IDX - 50);
+
+        int lookahead_steps;
+        if (is_pre_merge || is_in_merge_gate)
+        {
+            lookahead_steps = std::max(30, static_cast<int>((current_speed * 0.8) / 0.1));
+            lookahead_steps = std::min(lookahead_steps, 50);
+            target_vel = std::min(target_vel, 1.2);
+        }
+        else
+        {
+            lookahead_steps = std::max(50, static_cast<int>((current_speed * 1.5) / 0.1));
+            lookahead_steps = std::min(lookahead_steps, 150);
+        }
+
+        // [수정 4] lookahead가 path_size를 넘지 않도록
+        lookahead_steps = std::min(lookahead_steps, path_size);
 
         local_path_msg.poses.reserve(lookahead_steps);
 
         for (int i = 0; i < lookahead_steps; ++i)
         {
-            const int idx = (ego_idx + i) % path_size;
+            // [수정 5] 안전한 modulo 연산
+            const int idx = (ego_idx + i) % path_size; // 이제 path_size > 0 보장됨
 
             geometry_msgs::msg::PoseStamped pose;
             pose.header = local_path_msg.header;

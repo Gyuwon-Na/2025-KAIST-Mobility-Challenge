@@ -110,13 +110,13 @@ namespace bisa
         static constexpr double MIN_MERGE_GAP = 0.5;   // 최소 합류 갭
         static constexpr double SAFE_MERGE_GAP = 0.8;  // 안전 합류 갭
         static constexpr double MERGE_LOOKAHEAD = 3.0; // 합류 전후 탐색 범위
-        static constexpr double BOOST_DIST = 1.0;      // 앞차 따라잡기 구간
+        static constexpr double BOOST_DIST = 1.5;      // 앞차 따라잡기 구간
         static constexpr double MERGE_ZONE_MIN_FRONT_GAP = 0.5;
         static constexpr double MERGE_ZONE_MIN_REAR_GAP = 0.2;
 
         // --- [6] 차선 변경 파라미터 ---
         static constexpr double LANE_CHANGE_LOOKAHEAD = 0.7;  // 전방 여유 거리
-        static constexpr double LANE_CHANGE_LOOKBEHIND = 0.7; // 후방 여유 거리
+        static constexpr double LANE_CHANGE_LOOKBEHIND = 1.0; // 후방 여유 거리
         static constexpr double LANE_CHANGE_COOLDOWN = 2.0;   // 변경 후 최소 유지 시간
 
         // --- [7] 탐색 및 필터 파라미터 ---
@@ -127,7 +127,7 @@ namespace bisa
         static constexpr int LANE3_FORWARD_OFFSET = 10;    // Lane3 전방 오프셋
 
         // --- [8] 속도 제한 ---
-        static constexpr double MAX_VELOCITY = 2.0;       // 시스템 최대 속도
+        static constexpr double MAX_VELOCITY = 1.8;       // 시스템 최대 속도
         static constexpr double MIN_CREEP_VELOCITY = 0.2; // 최소 크립 속도
 
         // ========================================================================
@@ -142,7 +142,6 @@ namespace bisa
 
         // --- 인덱스 탐색 ---
         int find_closest_idx_forward(int lane_idx, double x, double y);
-        int find_closest_forward_idx_in_lane3();
 
         // --- 유틸리티 ---
         inline double get_dist_sq(double x1, double y1, double x2, double y2) const;
