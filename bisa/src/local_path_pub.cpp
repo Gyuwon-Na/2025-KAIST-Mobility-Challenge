@@ -327,7 +327,7 @@ namespace bisa
         constexpr double CAR_LEN = VEH_TOTAL_LENGTH; // 0.33m
         constexpr double LOOKAHEAD = 4.0;
         constexpr double SAFE_GAP = 0.55;
-        constexpr double CRITICAL_GAP = 0.25;
+        constexpr double CRITICAL_GAP = 0.3;
         constexpr double PREDICT_DT = 1.0;
 
         const double flow_speed = (env_slow_vel_ > 0.1) ? env_slow_vel_ : 1.2;
@@ -446,7 +446,7 @@ namespace bisa
             {
                 if (closest_front_dist < CRITICAL_GAP)
                 {
-                    info.recommended_vel = 1.5;
+                    info.recommended_vel = 0.0;
                     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 200,
                                          "[MERGE] CRITICAL FRONT (%.2fm) -> CREEP", closest_front_dist);
                 }
@@ -497,6 +497,10 @@ namespace bisa
         const double ego_speed_safe = std::max(ego_speed_, 0.3);
         const double ego_tta = ego_to_split / ego_speed_safe;
 
+        // [핵심 추가] Point of No Return (돌이킬 수 없는 지점) 판별
+        // 게이트까지 2.0m 미만이거나 이미 지났다면, 멈추는 것이 더 위험함 -> 무조건 가야 함
+        bool is_committed = (ego_to_split < 0.5);
+
         // Fast HV 추적
         double closest_fast_hv_dist = 999.0;
         double fast_hv_vel = 0.0;
@@ -545,36 +549,56 @@ namespace bisa
             }
             else if (threatening_tta < ego_tta + TIME_MARGIN)
             {
-                // Fast HV가 먼저 또는 동시 도착
-                info.gap_available = false;
+                // Fast HV가 먼저 또는 동시 도착 (위험 상황)
 
-                if (closest_fast_hv_dist < 0.5)
+                // [핵심 로직 수정] 진입 여부에 따른 STOP vs ESCAPE 분기
+                if (is_committed)
                 {
-                    info.recommended_vel = 0.0;
+                    // [CASE A] 이미 진입함(Committed) -> 절대 멈추지 말고 가속 탈출
+                    info.gap_available = true;
+
+                    // 탈출 속도: 기본 속도보다 빠르게, 뒷차보다 빠르면 더 좋음 (Max 2.0 제한)
+                    double flow_speed = (env_fast_vel_ > 0.1) ? env_fast_vel_ : MAX_VELOCITY;
+                    double escape_vel = std::max(flow_speed, fast_hv_vel * 1.3);
+                    info.recommended_vel = std::min(escape_vel, 2.0);
+
                     RCLCPP_WARN(this->get_logger(),
-                                "[SPLIT] STOP! Fast HV %d too close (%.2fm)",
-                                threatening_id, closest_fast_hv_dist);
-                }
-                else if (closest_fast_hv_dist < 1.0)
-                {
-                    info.recommended_vel = 0.3;
-                    RCLCPP_WARN(this->get_logger(),
-                                "[SPLIT] SLOW! Fast HV %d nearby (%.2fm, tta=%.2f)",
-                                threatening_id, closest_fast_hv_dist, threatening_tta);
+                                "[SPLIT] ESCAPE! Committed (dist=%.2f). Speeding up to %.2f (HV dist=%.2f)",
+                                ego_to_split, info.recommended_vel, closest_fast_hv_dist);
                 }
                 else
                 {
-                    info.recommended_vel = std::min(fast_hv_vel * 0.8, 1.0);
-                    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 300,
-                                         "[SPLIT] YIELD to Fast HV %d (dist=%.2f, following at %.2f)",
-                                         threatening_id, closest_fast_hv_dist, info.recommended_vel);
+                    // [CASE B] 아직 진입 전 -> 기존 로직대로 정지/감속 (Yield)
+                    info.gap_available = false;
+
+                    if (closest_fast_hv_dist < 0.5)
+                    {
+                        info.recommended_vel = 0.0;
+                        RCLCPP_WARN(this->get_logger(),
+                                    "[SPLIT] STOP! Fast HV %d too close (%.2fm)",
+                                    threatening_id, closest_fast_hv_dist);
+                    }
+                    else if (closest_fast_hv_dist < 1.0)
+                    {
+                        info.recommended_vel = 0.3;
+                        RCLCPP_WARN(this->get_logger(),
+                                    "[SPLIT] SLOW! Fast HV %d nearby (%.2fm, tta=%.2f)",
+                                    threatening_id, closest_fast_hv_dist, threatening_tta);
+                    }
+                    else
+                    {
+                        info.recommended_vel = std::min(fast_hv_vel * 0.8, 1.0);
+                        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 300,
+                                             "[SPLIT] YIELD to Fast HV %d (dist=%.2f, following at %.2f)",
+                                             threatening_id, closest_fast_hv_dist, info.recommended_vel);
+                    }
                 }
             }
             else
             {
-                // 애매함 - 보수적
+                // 애매함 - 보수적 (단, 여기도 Committed라면 가속하는 게 안전할 수 있음)
                 info.gap_available = true;
-                info.recommended_vel = 1.5;
+                info.recommended_vel = is_committed ? MAX_VELOCITY : 1.5;
             }
 
             info.front_dist = closest_fast_hv_dist;
@@ -588,7 +612,7 @@ namespace bisa
                                  "[SPLIT] No Fast HV nearby - GO!");
         }
 
-        // Lane 2 차량 추가 체크
+        // Lane 2 차량 추가 체크 (기존 유지)
         for (const auto &[id, obs] : obstacles_)
         {
             if (obs.lane != LaneID::LANE_2 || is_fast_hv(id))
