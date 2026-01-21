@@ -60,6 +60,9 @@ namespace bisa
         // 사용자님이 원하신 기존 추종 로직 (그대로 유지)
         int find_closest_idx_forward(int lane_idx, double x, double y);
 
+        // [추가됨] 전방 장애물 거리 계산 함수 선언
+        double calc_front_dist(int lane_idx, int ego_idx);
+
         // [변경] 위치 기반 안전성 체크 (가장 확실함)
         bool check_zone_safety(double center_x, double center_y, double radius, LaneID target_lane);
 
