@@ -43,7 +43,7 @@ namespace bisa
             "/Ego_pose", rclcpp::SensorDataQoS(), std::bind(&LocalPathPubCpp::pose_callback, this, std::placeholders::_1));
 
         sub_env_slow_ = this->create_subscription<std_msgs::msg::Float32>(
-            "/env/slow_vel", 10,
+            "/env/fast_vel", 10,
             [this](const std_msgs::msg::Float32::SharedPtr msg)
             {
                 if (msg->data > 0.1)
