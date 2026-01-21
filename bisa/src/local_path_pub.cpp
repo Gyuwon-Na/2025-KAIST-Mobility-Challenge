@@ -1,6 +1,6 @@
 /**
  * @file local_path_pub.cpp
- * @brief Safety-First Local Path: Consistent Zone-Based Safety
+ * @brief Force Lane 2 Tracking + NO Corner Slowdown (Raw Speed)
  */
 
 #include "bisa/local_path_pub.hpp"
@@ -10,52 +10,61 @@
 
 namespace bisa
 {
-    // [핵심] 절대 변하지 않는 고정 좌표 인덱스 (일관성 보장)
+    // 디버그용 마커 인덱스 (예: 합류 구간)
     static const int FIXED_MERGE_IDX = 1500;
-    static const int FIXED_SPLIT_IDX = 2281;
 
     LocalPathPubCpp::LocalPathPubCpp() : Node("local_path_pub")
     {
         RCLCPP_INFO(this->get_logger(), "============================================");
-        RCLCPP_INFO(this->get_logger(), "Local Path: FIXED INDICES + ZONE SAFETY");
-        RCLCPP_INFO(this->get_logger(), " - Merge Index: %d", FIXED_MERGE_IDX);
-        RCLCPP_INFO(this->get_logger(), " - Split Index: %d", FIXED_SPLIT_IDX);
+        RCLCPP_INFO(this->get_logger(), "Local Path: LANE 2 ONLY | RAW SPEED MODE");
+        RCLCPP_INFO(this->get_logger(), " - Corner Slowdown: REMOVED");
+        RCLCPP_INFO(this->get_logger(), " - Velocity: Strictly follows env_slow_vel");
         RCLCPP_INFO(this->get_logger(), "============================================");
 
         auto qos = rclcpp::QoS(10).transient_local();
 
+        // --------------------------------------------------------
         // Subscribers
+        // --------------------------------------------------------
         sub_lane_[0] = this->create_subscription<nav_msgs::msg::Path>(
             "/hdmap/lane_one", qos, [this](nav_msgs::msg::Path::SharedPtr msg)
             { lane_paths_[0] = msg; process_lane_path(0); });
+
+        // [핵심] Lane 2 데이터 수신
         sub_lane_[1] = this->create_subscription<nav_msgs::msg::Path>(
             "/hdmap/lane_two", qos, [this](nav_msgs::msg::Path::SharedPtr msg)
             { lane_paths_[1] = msg; process_lane_path(1); });
+
         sub_lane_[2] = this->create_subscription<nav_msgs::msg::Path>(
             "/hdmap/lane_three", qos, [this](nav_msgs::msg::Path::SharedPtr msg)
             { lane_paths_[2] = msg; process_lane_path(2); });
 
         sub_obs_ = this->create_subscription<visualization_msgs::msg::MarkerArray>(
             "/obstacles_markers", 10, std::bind(&LocalPathPubCpp::obstacle_callback, this, std::placeholders::_1));
+
         sub_pose_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
             "/Ego_pose", rclcpp::SensorDataQoS(), std::bind(&LocalPathPubCpp::pose_callback, this, std::placeholders::_1));
 
+        // [속도 수신] visualize_hvs에서 계산된 속도 수신
         sub_env_slow_ = this->create_subscription<std_msgs::msg::Float32>(
             "/env/slow_vel", 10,
             [this](const std_msgs::msg::Float32::SharedPtr msg)
-            { env_slow_vel_ = msg->data; });
+            {
+                // 유효한 값(0.1 이상)만 업데이트
+                if (msg->data > 0.1)
+                {
+                    env_slow_vel_ = msg->data;
+                }
+            });
 
-        sub_env_fast_ = this->create_subscription<std_msgs::msg::Float32>(
-            "/env/fast_vel", 10,
-            [this](const std_msgs::msg::Float32::SharedPtr msg)
-            { env_fast_vel_ = msg->data; });
-
+        // --------------------------------------------------------
         // Publishers
+        // --------------------------------------------------------
         pub_local_path_ = this->create_publisher<nav_msgs::msg::Path>("/local_path", 10);
         pub_target_vel_ = this->create_publisher<std_msgs::msg::Float32>("/planning/target_v", 10);
-        pub_debug_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/debug/merge_zone", 10);
+        pub_debug_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/debug/markers", 10);
 
-        // Timer
+        // Timer (50Hz)
         timer_ = this->create_wall_timer(std::chrono::milliseconds(20), std::bind(&LocalPathPubCpp::control_loop, this));
     }
 
@@ -67,23 +76,15 @@ namespace bisa
         return std::hypot(x1 - x2, y1 - y2);
     }
 
-    double LocalPathPubCpp::normalize_angle(double angle)
-    {
-        while (angle > M_PI)
-            angle -= 2.0 * M_PI;
-        while (angle < -M_PI)
-            angle += 2.0 * M_PI;
-        return angle;
-    }
-
-    // [기존 코드 유지] 사용자님이 원하시는 전방 탐색 로직
+    // [최적화] 인덱스 추적 및 자동 복구 (멈춤 현상 해결)
     int LocalPathPubCpp::find_closest_idx_forward(int lane_idx, double x, double y)
     {
         if (processed_lanes_[lane_idx].empty())
             return 0;
+
         int path_size = processed_lanes_[lane_idx].size();
 
-        // 처음 시작할 때
+        // 1. 초기화 또는 리셋 상태 (전역 검색)
         if (last_closest_idx_ < 0)
         {
             double min_d = 1e9;
@@ -101,8 +102,8 @@ namespace bisa
             return min_idx;
         }
 
-        // 주행 중: 이전 인덱스부터 앞으로 검색 (Window Search)
-        int search_len = 200; // 검색 범위
+        // 2. 주행 중 Window Search (범위 400으로 확장)
+        int search_len = 400;
         int best_idx = last_closest_idx_;
         double min_d = 1e9;
 
@@ -116,59 +117,28 @@ namespace bisa
                 best_idx = idx;
             }
         }
+
+        // [안전장치] 만약 가장 가까운 점도 3m 이상 멀어졌다면 -> 트래킹 실패로 간주하고 리셋
+        if (min_d > 3.0)
+        {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                 "Tracking Lost (Dist: %.2fm). Resetting Search...", min_d);
+            last_closest_idx_ = -1; // 다음 루프에서 전역 검색 수행
+            return best_idx;
+        }
+
         last_closest_idx_ = best_idx;
         return best_idx;
     }
 
     LaneID LocalPathPubCpp::get_lane_at(double x, double y)
     {
-        // 간단한 최근접 차선 판별
-        double d2 = 1e9, d3 = 1e9;
-
-        // Lane 2 거리 (샘플링 최적화)
-        if (!processed_lanes_[1].empty())
-        {
-            for (size_t i = 0; i < processed_lanes_[1].size(); i += 10)
-            {
-                double d = get_dist(x, y, processed_lanes_[1][i].x, processed_lanes_[1][i].y);
-                if (d < d2)
-                    d2 = d;
-            }
-        }
-        // Lane 3 거리
-        if (!processed_lanes_[2].empty())
-        {
-            for (size_t i = 0; i < processed_lanes_[2].size(); i += 10)
-            {
-                double d = get_dist(x, y, processed_lanes_[2][i].x, processed_lanes_[2][i].y);
-                if (d < d3)
-                    d3 = d;
-            }
-        }
-
-        if (d2 < d3 && d2 < 1.0)
-            return LaneID::LANE_2;
-        if (d3 <= d2 && d3 < 1.0)
-            return LaneID::LANE_3;
-        return LaneID::NONE;
+        return LaneID::LANE_2;
     }
 
-    // [핵심 변경] Zone 기반 안전성 체크 (방향 무관, 위치만 봄)
     bool LocalPathPubCpp::check_zone_safety(double center_x, double center_y, double radius, LaneID target_lane)
     {
-        for (auto const &[id, obs] : obstacles_)
-        {
-            if (obs.lane != target_lane)
-                continue;
-
-            // 해당 구역(반경 radius) 안에 차가 들어오면 무조건 위험
-            double d = get_dist(center_x, center_y, obs.x, obs.y);
-            if (d < radius)
-            {
-                return false; // UNSAFE
-            }
-        }
-        return true; // SAFE
+        return true;
     }
 
     // ========================================================================
@@ -178,103 +148,72 @@ namespace bisa
     {
         if (!pose_received_)
             return;
-        if (processed_lanes_[2].empty())
+
+        // Lane 2 (Index 1) 데이터 체크
+        if (processed_lanes_[1].empty())
+        {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for Lane 2 Data...");
             return;
-
-        // 1. 현재 위치 찾기 (사용자님 로직 사용)
-        LaneID current_lane_id = get_lane_at(ego_x_, ego_y_);
-
-        if (current_lane_id == LaneID::NONE || current_lane_id == LaneID::LANE_1)
-        {
-            current_lane_id = LaneID::LANE_3;
         }
 
-        int ego_idx = find_closest_idx_forward(2, ego_x_, ego_y_);
-        double target_vel = 2.0;
+        // 1. 무조건 Lane 2 타겟 설정
+        int target_lane_idx = 1;
 
-        if (current_lane_id == LaneID::LANE_2)
-        {
-            // Lane 2: Slow Velocity 사용
-            target_vel = (env_slow_vel_ > 0.1) ? env_slow_vel_ : 1.5; // 값 안오면 1.5
-        }
-        else
-        {
-            // Lane 3: Fast Velocity 사용
-            target_vel = (env_fast_vel_ > 0.1) ? env_fast_vel_ : 2.0; // 값 안오면 2.0
-        }
-
-        const auto &lane3 = processed_lanes_[2];
-        int path_size = lane3.size();
+        // 2. 현재 위치 인덱스 찾기
+        int ego_idx = find_closest_idx_forward(target_lane_idx, ego_x_, ego_y_);
 
         // --------------------------------------------------------------------
-        // [FIX] Path Generation (최소 길이 보장)
-        // 속도가 줄어도 경로가 너무 짧아지지 않도록 최소 50개 점은 무조건 생성
+        // [수정 완료] 속도 설정 (코너 감속 로직 제거)
         // --------------------------------------------------------------------
+        // 곡률 계산, 코너링 감속 등 모든 로직을 배제하고
+        // 오직 수신된 env_slow_vel 값만 사용합니다.
+
+        double target_vel = env_slow_vel_;
+
+        // (안전장치) 만약 토픽이 아직 안 들어왔거나 0이라면 기본 속도 1.0 부여 (멈춤 방지)
+        if (target_vel < 0.1)
+        {
+            target_vel = 1.0;
+        }
+
+        // 3. Local Path 생성
+        const auto &target_lane = processed_lanes_[target_lane_idx];
+        int path_size = target_lane.size();
+
         nav_msgs::msg::Path local_path_msg;
         local_path_msg.header.frame_id = "world";
         local_path_msg.header.stamp = this->now();
 
-        // 기존 로직: 속도 비례 Lookahead
+        // 현재 속도에 맞춰 Lookahead 거리 조절 (너무 짧으면 MPC가 불안정할 수 있음)
         double current_speed = std::abs(ego_speed_);
-        // 최소 5m(50개)는 무조건 보장, 속도 빠르면 더 길게
-        int lookahead_steps = std::max(50, static_cast<int>((current_speed * 1.5) / 0.1));
-        // 상한선 설정 (너무 길면 불필요)
+        int lookahead_steps = std::max(40, static_cast<int>((current_speed * 1.5) / 0.1));
         lookahead_steps = std::min(lookahead_steps, 150);
+
+        // MPC가 바로 추종할 수 있게 현재 위치보다 살짝 앞(+2)부터 경로 제공
+        int start_offset = 2;
 
         for (int i = 0; i < lookahead_steps; ++i)
         {
-            int idx = (ego_idx + i) % path_size; // Loop 처리
+            int idx = (ego_idx + start_offset + i) % path_size;
 
             geometry_msgs::msg::PoseStamped pose;
             pose.header = local_path_msg.header;
-            pose.pose.position.x = lane3[idx].x;
-            pose.pose.position.y = lane3[idx].y;
+            pose.pose.position.x = target_lane[idx].x;
+            pose.pose.position.y = target_lane[idx].y;
             pose.pose.orientation.w = 1.0;
             local_path_msg.poses.push_back(pose);
         }
 
         pub_local_path_->publish(local_path_msg);
 
+        // 4. 목표 속도 발행
         std_msgs::msg::Float32 v_msg;
         v_msg.data = target_vel;
         pub_target_vel_->publish(v_msg);
-
-        // [시각화] 고정 포인트 표시 (제대로 작동하는지 눈으로 확인용)
-        visualization_msgs::msg::MarkerArray markers;
-        auto now = this->now();
-
-        // Merge (Red)
-        visualization_msgs::msg::Marker m1;
-        m1.header.frame_id = "world";
-        m1.header.stamp = now;
-        m1.id = 0;
-        m1.type = visualization_msgs::msg::Marker::SPHERE;
-        m1.action = visualization_msgs::msg::Marker::ADD;
-        m1.pose.position.x = lane3[FIXED_MERGE_IDX].x;
-        m1.pose.position.y = lane3[FIXED_MERGE_IDX].y;
-        m1.pose.position.z = 0.5;
-        m1.scale.x = 1.0;
-        m1.scale.y = 1.0;
-        m1.scale.z = 1.0;
-        m1.color.r = 1.0;
-        m1.color.a = 0.6;
-        markers.markers.push_back(m1);
-
-        // Split (Blue)
-        visualization_msgs::msg::Marker m2;
-        m2 = m1;
-        m2.id = 1;
-        m2.pose.position.x = lane3[FIXED_SPLIT_IDX].x;
-        m2.pose.position.y = lane3[FIXED_SPLIT_IDX].y;
-        m2.color.r = 0.0;
-        m2.color.b = 1.0;
-        markers.markers.push_back(m2);
-
-        pub_debug_->publish(markers);
     }
 
     // ========================================================================
-    // CALLBACK IMPL
+    // CALLBACKS
     // ========================================================================
     void LocalPathPubCpp::process_lane_path(int lane_idx)
     {
@@ -292,28 +231,7 @@ namespace bisa
 
     void LocalPathPubCpp::obstacle_callback(const visualization_msgs::msg::MarkerArray::SharedPtr msg)
     {
-        double now_s = this->now().seconds();
-        for (const auto &mk : msg->markers)
-        {
-            if (mk.type != visualization_msgs::msg::Marker::CUBE)
-                continue;
-            int id = mk.id;
-            ObstacleInfo &obs = obstacles_[id];
-
-            if (obs.last_seen_sec > 0)
-            {
-                double dt = now_s - obs.last_seen_sec;
-                if (dt > 0.01)
-                {
-                    obs.vx = (mk.pose.position.x - obs.x) / dt;
-                    obs.vy = (mk.pose.position.y - obs.y) / dt;
-                }
-            }
-            obs.x = mk.pose.position.x;
-            obs.y = mk.pose.position.y;
-            obs.lane = get_lane_at(obs.x, obs.y);
-            obs.last_seen_sec = now_s;
-        }
+        // Lane 2 강제 추종 모드이므로 장애물 회피 로직은 생략
     }
 
     void LocalPathPubCpp::pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -322,12 +240,6 @@ namespace bisa
         double new_x = msg->pose.position.x;
         double new_y = msg->pose.position.y;
 
-        // Yaw calculation
-        double siny = 2.0 * (msg->pose.orientation.w * msg->pose.orientation.z + msg->pose.orientation.x * msg->pose.orientation.y);
-        double cosy = 1.0 - 2.0 * (msg->pose.orientation.y * msg->pose.orientation.y + msg->pose.orientation.z * msg->pose.orientation.z);
-        ego_yaw_ = std::atan2(siny, cosy);
-
-        // Speed calculation
         if (prev_pose_time_ > 0)
         {
             double dt = now_s - prev_pose_time_;
@@ -335,8 +247,7 @@ namespace bisa
             {
                 double dist = get_dist(new_x, new_y, ego_x_, ego_y_);
                 double raw_speed = dist / dt;
-                // Simple Filter
-                ego_speed_ = ego_speed_ * 0.7 + raw_speed * 0.3;
+                ego_speed_ = ego_speed_ * 0.7 + raw_speed * 0.3; // Low-pass filter
             }
         }
         ego_x_ = new_x;

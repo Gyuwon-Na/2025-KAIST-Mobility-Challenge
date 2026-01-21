@@ -17,23 +17,22 @@ class GlobalPathPublisher(Node):
         super().__init__("global_path_publisher")
 
         self.get_logger().info("=" * 60)
-        self.get_logger().info(" [FIX] Global Path Publisher: FORCING LANE THREE ")
+        self.get_logger().info("Global Path Publisher: FORCE LANE 2 (Index 1)")
         self.get_logger().info("=" * 60)
 
-        # QoS 설정 (Latched: 늦게 켜진 Rviz에서도 보이도록 설정)
+        # QoS 설정
         qos = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.global_path_pub = self.create_publisher(Path, "/user_global_path", qos)
 
-        # 경로 로드 및 발행
-        self.force_load_lane_three()
+        # 경로 로드 및 발행 (Lane 2 강제)
+        self.force_load_lane_two()
 
-    def force_load_lane_three(self):
+    def force_load_lane_two(self):
         # 1. 파일 경로 찾기
         home_dir = os.path.expanduser("~")
         file_path = os.path.join(home_dir, "KAIST/bisa/hdmap_data/lanes.json")
 
         if not os.path.exists(file_path):
-            # 패키지 내부 경로 시도
             try:
                 pkg_path = get_package_share_directory("bisa")
                 file_path = os.path.join(pkg_path, "hdmap_data", "lanes.json")
@@ -46,32 +45,20 @@ class GlobalPathPublisher(Node):
             )
             return
 
-        # 2. JSON 로드 및 'three' 키 강제 추출
+        # 2. JSON 로드 및 'two' 키 강제 추출
         try:
             with open(file_path, "r") as f:
                 data = json.load(f)
 
-            # [강제] 무조건 'three'만 찾음
-            if "three" in data:
-                lane_three = data["three"]
-
-                # [디버깅] 터미널에 좌표 출력 (이게 -5.0 근처여야 함)
-                if len(lane_three) > 0:
-                    start_x = lane_three[0].get("x", 0)
-                    start_y = lane_three[0].get("y", 0)
-                    self.get_logger().info(
-                        f" -> CHECK: Lane 'three' Start Point: X={start_x}, Y={start_y}"
-                    )
-                    if start_x > -4.0:
-                        self.get_logger().warn(
-                            "WARNING: This coordinate looks like Lane 1 or 2! Check lanes.json content."
-                        )
-                    else:
-                        self.get_logger().info("OK: Coordinates look like Lane 3.")
-
-                self.publish_path(lane_three)
+            # [강제] 무조건 'two'만 찾음
+            if "two" in data:
+                lane_two = data["two"]
+                self.get_logger().info(
+                    f" -> Loaded Lane 2 with {len(lane_two)} points."
+                )
+                self.publish_path(lane_two)
             else:
-                self.get_logger().error("KEY ERROR: 'three' key not found in json!")
+                self.get_logger().error("KEY ERROR: 'two' key not found in json!")
 
         except Exception as e:
             self.get_logger().error(f"Failed to load JSON: {e}")
@@ -94,9 +81,6 @@ class GlobalPathPublisher(Node):
             msg.poses.append(pose)
 
         self.global_path_pub.publish(msg)
-        self.get_logger().info(
-            f"✓ Published /user_global_path (Lane 3) with {len(msg.poses)} points."
-        )
 
 
 def main(args=None):

@@ -95,7 +95,7 @@ namespace bisa
             return output;
 
         // ==========================================
-        // Cost-based MPC (without QP solver)
+        // Cost-based MPC (Logic Modified)
         // ==========================================
 
         int lookahead_idx = std::clamp(params_.horizon / 2, 5, static_cast<int>(targets.size()) - 1);
@@ -117,51 +117,46 @@ namespace bisa
         while (heading_error < -M_PI)
             heading_error += 2.0 * M_PI;
 
-        double path_curvature = calculate_path_curvature(targets, lookahead_idx);
-        double curvature_magnitude = std::abs(path_curvature);
-
         /* ================================================================================== */
-        // Q_pos effect
-        double position_weight_factor = std::clamp(params_.Q_pos / 20.0, 0.5, 2.0);
+        // [수정 완료] 코너링 감속 로직 완전 제거
+        /* ================================================================================== */
 
-        // [수정 전] 계수가 10.0으로 너무 큼 (조금만 휘어도 속도 확 줄어듦)
-        // double curvature_penalty = 1.0 / (1.0 + curvature_magnitude * 10.0 * position_weight_factor);
+        // 기존 로직: 곡률(Curvature)과 헤딩 에러가 크면 v_target을 줄임
+        // double path_curvature = calculate_path_curvature(targets, lookahead_idx);
+        // double curvature_penalty = ...
+        // double heading_penalty = ...
+        // double v_target = params_.max_velocity * curvature_penalty * heading_penalty;
 
-        // [수정 후] 계수를 2.0 정도로 대폭 낮춤 -> 코너에서도 속도 유지
-        double curvature_penalty = 1.0 / (1.0 + curvature_magnitude * 2.0 * position_weight_factor);
-
-        // Q_heading effect
-        double heading_weight_factor = std::clamp(params_.Q_heading / 12.0, 0.5, 2.0);
-
-        // [수정 전] 방향이 조금만 틀어져도 감속함 (5.0)
-        // double heading_penalty = 1.0 / (1.0 + std::abs(heading_error) * 5.0 * heading_weight_factor);
-
-        // [수정 후] 방향 오차에 의한 감속도 완화 (1.0)
-        double heading_penalty = 1.0 / (1.0 + std::abs(heading_error) * 1.0 * heading_weight_factor);
-
-        // 최종 목표 속도 계산 (이 값이 커져야 코너에서 빠름)
-        double v_target = params_.max_velocity * curvature_penalty * heading_penalty;
+        // [변경 로직] 무조건 입력받은 Max Velocity(즉, env_slow_vel) 유지
+        double v_target = params_.max_velocity;
 
         /* ================================================================================== */
 
-        // R_v effect (velocity smoothness)
+        // R_v effect (Velocity Smoothness)
+        // 목표 속도까지 도달하는 가속도 제한은 유지 (안전상 급발진 방지)
         double v_smoothing = std::clamp(params_.R_v * 2.0, 1.0, 10.0);
         double v_cmd = prev_v_ + (v_target - prev_v_) / v_smoothing;
 
+        // Pure Pursuit-like Angular Velocity Calculation
+        // 코너 감속은 뺐지만, 조향(W)은 정확히 해야 하므로 아래 로직 유지
+        double heading_weight_factor = std::clamp(params_.Q_heading / 12.0, 0.5, 2.0);
         double alpha = target_heading - theta0;
         double pure_pursuit_w = (2.0 * std::sin(alpha)) / distance;
 
         double heading_correction = heading_error * heading_weight_factor * 0.5;
         double w_target = pure_pursuit_w + heading_correction;
 
-        // R_w effect (angular smoothness)
+        // R_w effect (Angular Smoothness)
         double w_smoothing = std::clamp(params_.R_w * 2.0, 1.0, 10.0);
         double w_cmd = prev_w_ + (w_target - prev_w_) / w_smoothing;
 
         w_cmd = std::clamp(w_cmd, -params_.max_angular_vel, params_.max_angular_vel);
 
+        // 가속도 제한 (Jerk 방지)
         double max_dv = params_.max_accel * params_.dt;
         v_cmd = std::clamp(v_cmd, prev_v_ - max_dv, prev_v_ + max_dv);
+
+        // 최종 속도 범위 제한
         v_cmd = std::clamp(v_cmd, params_.min_velocity, params_.max_velocity);
 
         prev_v_ = v_cmd;
@@ -170,6 +165,7 @@ namespace bisa
         output.velocity = v_cmd;
         output.angular_velocity = w_cmd;
 
+        // 예측 경로 생성 (시각화용)
         double x = x0, y = y0, theta = theta0;
         for (int i = 0; i < params_.horizon; ++i)
         {
