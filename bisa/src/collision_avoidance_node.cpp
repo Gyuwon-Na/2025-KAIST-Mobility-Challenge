@@ -300,16 +300,50 @@ namespace bisa
         if (!state.global_path.empty())
         {
             double min_dist = 1e9;
-            size_t closest = 0;
-            for (size_t i = 0; i < state.global_path.size(); ++i)
+            size_t closest = state.current_global_waypoint;
+            size_t total = state.global_path.size();
+
+            // 1. 먼저 주변(Window) 탐색 (앞뒤 200개)
+            //    - 차량이 주행 중이거나, 살짝 뒤로 밀렸을 때 안정적으로 현재 차선을 유지함
+            int search_window = 200;
+            for (int i = -search_window; i <= search_window; ++i)
             {
-                double d = state.position.dist_to(state.global_path[i]);
+                long idx_temp = static_cast<long>(state.current_global_waypoint) + i;
+
+                // 인덱스 순환 처리
+                if (idx_temp < 0)
+                    idx_temp += total;
+                else if (idx_temp >= static_cast<long>(total))
+                    idx_temp %= total;
+
+                size_t idx = static_cast<size_t>(idx_temp);
+                double d = state.position.dist_to(state.global_path[idx]);
+
                 if (d < min_dist)
                 {
                     min_dist = d;
-                    closest = i;
+                    closest = idx;
                 }
             }
+
+            // 2. 위치 이탈(납치) 감지 -> 전역(Global) 탐색
+            //    - 사용자가 차량을 멀리 옮겼을 때 (Local Path Pub과 싱크를 맞춤)
+            //    - 주변 탐색 결과가 2.0m 이상 차이나면 경로를 이탈했다고 판단
+            if (min_dist > 2.0)
+            {
+                min_dist = 1e9;
+                for (size_t i = 0; i < total; ++i)
+                {
+                    double d = state.position.dist_to(state.global_path[i]);
+                    if (d < min_dist)
+                    {
+                        min_dist = d;
+                        closest = i;
+                    }
+                }
+                // RCLCPP_WARN(this->get_logger(), "CAV%s Relocated! Reset index to %zu", format_cav_id(cav_id).c_str(), closest);
+            }
+
             state.current_global_waypoint = closest;
         }
 

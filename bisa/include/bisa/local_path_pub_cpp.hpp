@@ -31,6 +31,7 @@ namespace bisa
         int lap_count_ = 0;
 
         bool is_initialized_ = false;
+        int search_window = 100;
 
         rclcpp::Time lap_start_time_;
         double total_distance_ = 0.0;

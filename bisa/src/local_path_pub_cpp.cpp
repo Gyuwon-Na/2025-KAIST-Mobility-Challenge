@@ -129,34 +129,65 @@ namespace bisa
         double min_d = 1e9;
         size_t closest = current_waypoint_;
 
-        
-        // 초기화 전이면 전체 경로(total) 탐색, 초기화 후면 100개만 탐색
-        size_t search_range = is_initialized_ ? 100 : total;
+        // 만약 초기화 전이라면 전체 탐색 (지난번 답변의 is_initialized_ 활용 가정)
+        // 혹은 별도 플래그가 없다면, 그냥 아래 로직이 자동으로 커버합니다.
+        bool need_global_search = !is_initialized_;
 
-        for (size_t i = 0; i < search_range; ++i)
+        if (!need_global_search)
         {
-            size_t idx = (current_waypoint_ + i) % total; // 순환!
-            double dx = global_path_->poses[idx].pose.position.x - x;
-            double dy = global_path_->poses[idx].pose.position.y - y;
-            double d = std::sqrt(dx * dx + dy * dy);
-
-            if (d < min_d)
+            for (int i = -search_window; i <= search_window; ++i)
             {
-                min_d = d;
-                closest = idx;
+                long idx_temp = static_cast<long>(current_waypoint_) + i;
+
+                // 인덱스 순환 처리 (음수 및 초과 방지)
+                if (idx_temp < 0)
+                    idx_temp += total;
+                else if (idx_temp >= static_cast<long>(total))
+                    idx_temp %= total;
+
+                size_t idx = static_cast<size_t>(idx_temp);
+
+                double dx = global_path_->poses[idx].pose.position.x - x;
+                double dy = global_path_->poses[idx].pose.position.y - y;
+                double d = std::sqrt(dx * dx + dy * dy);
+
+                if (d < min_d)
+                {
+                    min_d = d;
+                    closest = idx;
+                }
             }
         }
 
-        
-        if (!is_initialized_)
+        // 2. [핵심] "차를 들어서 옮긴 경우" 감지 (Global Re-initialization)
+        // Window 탐색 결과 가장 가까운 점이 2.0m 이상 떨어져 있다면,
+        // 차를 멀리 옮겼다고 판단하고 전체 경로에서 다시 찾습니다.
+        if (need_global_search || min_d > 2.0)
         {
-            current_waypoint_ = closest;
+            min_d = 1e9; // 거리 초기화
+            for (size_t i = 0; i < total; ++i)
+            {
+                double dx = global_path_->poses[i].pose.position.x - x;
+                double dy = global_path_->poses[i].pose.position.y - y;
+                double d = std::sqrt(dx * dx + dy * dy);
+
+                if (d < min_d)
+                {
+                    min_d = d;
+                    closest = i;
+                }
+            }
+            // 전역 탐색을 수행했다면 초기화 완료 처리
             is_initialized_ = true;
-            RCLCPP_INFO(this->get_logger(), "Initialized start point at index: %zu", closest);
+            // RCLCPP_WARN(this->get_logger(), "Relocated! Reset path index to %zu", closest);
         }
 
+        // ==========================================
+
         // 한 바퀴 완료 감지
-        if (closest < current_waypoint_ && current_waypoint_ > total * 0.9)
+        // (갑자기 뒤로 옮겼을 때 랩 카운트가 오작동하지 않도록 방어 코드 추가 권장)
+        // 단순히 인덱스가 줄어든 경우는 랩 변경이 아님.
+        if (closest < current_waypoint_ && current_waypoint_ > total * 0.9 && closest < total * 0.1)
         {
             lap_count_++;
             lap_start_time_ = this->now();
