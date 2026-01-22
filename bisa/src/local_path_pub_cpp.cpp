@@ -1,0 +1,219 @@
+#include "bisa/local_path_pub_cpp.hpp"
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <cmath>
+
+namespace bisa
+{
+
+    LocalPathPubCpp::LocalPathPubCpp()
+        : Node("local_path_pub_cpp"),
+          lap_start_time_(this->now())
+    {
+
+        RCLCPP_INFO(this->get_logger(), "===========================================");
+        RCLCPP_INFO(this->get_logger(), "Local Path Publisher C++ - 1kHz");
+        RCLCPP_INFO(this->get_logger(), "Infinite Loop Mode with LapInfo");
+        RCLCPP_INFO(this->get_logger(), "===========================================");
+        // [추가] 내 차량 ID 파라미터
+        this->declare_parameter("target_cav_id", 1);
+        int target_id = this->get_parameter("target_cav_id").as_int();
+        std::string id_str = (target_id < 10) ? "0" + std::to_string(target_id) : std::to_string(target_id);
+
+        RCLCPP_INFO(this->get_logger(), "Local Path Pub for CAV_%s", id_str.c_str());
+        // Global path는 사용자별로 다를 수 있으므로 user_global_path_cavXX 형식 권장
+        std::string global_path_topic = "/user_global_path_cav" + id_str;
+        std::string pose_topic = "/CAV_" + id_str;
+        std::string local_pub_topic = "/local_path_cav" + id_str;
+        std::string lap_info_topic = "/lap_info_cav" + id_str;
+
+        global_sub_ = this->create_subscription<nav_msgs::msg::Path>(
+            global_path_topic,
+            rclcpp::QoS(10).transient_local(),
+            std::bind(&LocalPathPubCpp::global_path_callback, this, std::placeholders::_1));
+
+        pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            pose_topic,
+            rclcpp::SensorDataQoS(),
+            std::bind(&LocalPathPubCpp::pose_callback, this, std::placeholders::_1));
+
+        local_pub_ = this->create_publisher<nav_msgs::msg::Path>(local_pub_topic, 10);
+
+        // Lap info 등 다른 토픽들도 필요하면 suffix 붙임
+        lap_info_pub_ = this->create_publisher<bisa::msg::LapInfo>(lap_info_topic, 10);
+
+        // Marker는 namespace 등으로 구분하거나 topic 명 변경
+        marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/car_marker_" + id_str, 10);
+        // 1kHz timer
+        timer_ = this->create_wall_timer(
+            std::chrono::microseconds(1000),
+            std::bind(&LocalPathPubCpp::publish_local_path, this));
+
+        RCLCPP_INFO(this->get_logger(), "Ready!");
+    }
+
+    void LocalPathPubCpp::global_path_callback(const nav_msgs::msg::Path::SharedPtr msg)
+    {
+        if (!global_path_)
+        {
+            // RCLCPP_INFO(this->get_logger(), "Global Path: %zu pts", msg->poses.size());
+        }
+        global_path_ = msg;
+    }
+
+    void LocalPathPubCpp::pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+    {
+        current_pose_ = msg->pose;
+
+        // 총 주행 거리 계산
+        if (prev_pose_)
+        {
+            double dx = current_pose_->position.x - prev_pose_->position.x;
+            double dy = current_pose_->position.y - prev_pose_->position.y;
+            total_distance_ += std::sqrt(dx * dx + dy * dy);
+        }
+        prev_pose_ = current_pose_;
+
+        publish_car_marker();
+    }
+
+    void LocalPathPubCpp::publish_car_marker()
+    {
+        if (!current_pose_)
+            return;
+
+        auto marker = visualization_msgs::msg::Marker();
+        marker.header.frame_id = "world";
+        marker.header.stamp = this->now();
+        marker.ns = "my_car";
+        marker.id = 0;
+        marker.type = visualization_msgs::msg::Marker::CUBE;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+
+        marker.pose.position = current_pose_->position;
+
+        // Euler to Quaternion
+        double roll = current_pose_->orientation.x;
+        double pitch = current_pose_->orientation.y;
+        double yaw = current_pose_->orientation.z;
+
+        tf2::Quaternion q;
+        q.setRPY(roll, pitch, yaw);
+        marker.pose.orientation = tf2::toMsg(q);
+
+        marker.scale.x = 0.33;
+        marker.scale.y = 0.15;
+        marker.scale.z = 0.2;
+
+        marker.color.r = 1.0;
+        marker.color.g = 1.0;
+        marker.color.b = 0.0;
+        marker.color.a = 0.8;
+
+        marker_pub_->publish(marker);
+    }
+
+    void LocalPathPubCpp::publish_local_path()
+    {
+        if (!global_path_ || !current_pose_)
+            return;
+
+        size_t total = global_path_->poses.size();
+        if (total == 0)
+            return;
+
+        double x = current_pose_->position.x;
+        double y = current_pose_->position.y;
+
+        // Find closest waypoint
+        double min_d = 1e9;
+        size_t closest = current_waypoint_;
+
+        
+        // 초기화 전이면 전체 경로(total) 탐색, 초기화 후면 100개만 탐색
+        size_t search_range = is_initialized_ ? 100 : total;
+
+        for (size_t i = 0; i < search_range; ++i)
+        {
+            size_t idx = (current_waypoint_ + i) % total; // 순환!
+            double dx = global_path_->poses[idx].pose.position.x - x;
+            double dy = global_path_->poses[idx].pose.position.y - y;
+            double d = std::sqrt(dx * dx + dy * dy);
+
+            if (d < min_d)
+            {
+                min_d = d;
+                closest = idx;
+            }
+        }
+
+        
+        if (!is_initialized_)
+        {
+            current_waypoint_ = closest;
+            is_initialized_ = true;
+            RCLCPP_INFO(this->get_logger(), "Initialized start point at index: %zu", closest);
+        }
+
+        // 한 바퀴 완료 감지
+        if (closest < current_waypoint_ && current_waypoint_ > total * 0.9)
+        {
+            lap_count_++;
+            lap_start_time_ = this->now();
+            RCLCPP_INFO(this->get_logger(),
+                        "🏁 Lap %d completed! Total distance: %.2fm",
+                        lap_count_, total_distance_);
+        }
+
+        current_waypoint_ = closest;
+
+        // 진행률 계산 (0.0 ~ 100.0)
+        double progress = (static_cast<double>(current_waypoint_) / total) * 100.0;
+
+        // 현재 바퀴 경과 시간
+        double elapsed_time = (this->now() - lap_start_time_).seconds();
+
+        // LapInfo 메시지 생성 및 발행
+        auto lap_info = bisa::msg::LapInfo();
+        lap_info.lap_count = lap_count_;
+        lap_info.progress = static_cast<float>(progress);
+        lap_info.current_waypoint = static_cast<int32_t>(current_waypoint_);
+        lap_info.total_waypoints = static_cast<int32_t>(total);
+        lap_info.elapsed_time = static_cast<float>(elapsed_time);
+        lap_info.total_distance = static_cast<float>(total_distance_);
+
+        lap_info_pub_->publish(lap_info);
+
+        // 10초마다 로그
+        auto now = this->now();
+        if ((now - last_log_time_).seconds() > 10.0)
+        {
+            RCLCPP_INFO(this->get_logger(),
+                        "Lap %d | Progress: %.1f%% | Time: %.1fs | Distance: %.2fm",
+                        lap_count_, progress, elapsed_time, total_distance_);
+            last_log_time_ = now;
+        }
+
+        // Local path (순환 경로)
+        auto local = nav_msgs::msg::Path();
+        local.header.frame_id = "world";
+        local.header.stamp = this->now();
+
+        for (size_t i = 0; i < local_path_size_; ++i)
+        {
+            size_t idx = (current_waypoint_ + i) % total; // 순환!
+            local.poses.push_back(global_path_->poses[idx]);
+        }
+
+        local_pub_->publish(local);
+    }
+
+}
+
+int main(int argc, char **argv)
+{
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared<bisa::LocalPathPubCpp>());
+    rclcpp::shutdown();
+    return 0;
+}

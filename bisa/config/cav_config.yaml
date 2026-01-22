@@ -1,0 +1,15 @@
+/**:
+  ros__parameters:
+    cav_ids: [1, 2, 3, 4]
+    high_priority_ids: [1, 2]
+    target_cav_id: 24
+
+# ==========================================
+# 이 부분은 C++ 노드가 읽으면 안 됩니다.
+# Python Launch 파일에서만 읽습니다.
+# ==========================================
+hv_settings:
+  - id: 19
+    node_sequence: [38, 41, 62, 38]
+  - id: 20
+    node_sequence: [38, 41, 62, 38]
