@@ -14,22 +14,7 @@ CAV_PATH_SETTINGS = [
     [16, 61, 47, 41, 42, 8, 11, 16],
 ]
 
-# [2] MPC 공통 제어 파라미터
-MPC_PARAMS = {
-    "Q_pos": 954.0,
-    "Q_heading": 956.0,
-    "R_v": 0.6,
-    "R_w": 0.6,
-    "max_velocity": 1.2,
-    "max_accel": 1.5,
-    "max_angular_vel": 2.8,
-    "horizon": 160,
-}
-
 def load_yaml_file(file_path):
-    """
-    YAML 파일을 읽어서 전체 딕셔너리를 반환합니다.
-    """
     try:
         with open(file_path, "r") as f:
             return yaml.safe_load(f)
@@ -42,25 +27,26 @@ def generate_launch_description():
     config_file = os.path.join(pkg_dir, "config", "cav_config.yaml")
     rviz_config = os.path.join(pkg_dir, "rviz", "bisa.rviz")
 
-    # 1. YAML 파일 로드 및 분리
+    # 1. YAML 파일 로드
     full_config = load_yaml_file(config_file)
     
-    # (A) C++ 노드용 파라미터 추출 (ros__parameters 내부만)
-    #     파일 경로를 넘기면 전체를 파싱하려다 에러가 나므로,
-    #     여기서 깨끗한 딕셔너리만 뽑아서 넘깁니다.
+    # 파라미터 추출
     try:
         ros_params_dict = full_config["/**"]["ros__parameters"]
+        # MPC 파라미터 분리 (없으면 빈 딕셔너리)
+        mpc_config = ros_params_dict.get("mpc_settings", {})
     except KeyError:
-        print("[WARN] 'ros__parameters' 키를 찾을 수 없습니다. 기본값을 사용합니다.")
+        print("[WARN] YAML 구조 에러. 기본값을 사용합니다.")
         ros_params_dict = {"cav_ids": [1, 2, 3, 4]}
+        mpc_config = {}
 
-    # (B) Python Launch용 HV 설정 추출
+    # HV 설정 추출
     hv_settings = full_config.get("hv_settings", [])
 
     nodes = []
 
     # ---------------------------------------------------------
-    # 2. 공통 노드 실행
+    # 2. 공통 노드 및 GUI 실행
     # ---------------------------------------------------------
     nodes.append(
         Node(
@@ -71,7 +57,19 @@ def generate_launch_description():
         )
     )
 
-    # [수정 포인트] config_file 경로 대신 ros_params_dict를 전달합니다.
+    # [수정] MPC Tuner GUI 실행 (YAML 파라미터 전달)
+    # GUI가 실행되면서 이 값들로 초기 트랙바 위치를 잡고, 
+    # cav_ids 정보를 통해 누구에게 명령을 보낼지 결정합니다.
+    nodes.append(
+        Node(
+            package="bisa",
+            executable="mpc_tuner_gui.py",
+            name="mpc_tuner_gui",
+            output="screen",
+            parameters=[ros_params_dict, mpc_config], # cav_ids와 mpc설정 모두 전달
+        )
+    )
+
     nodes.append(
         Node(
             package="bisa",
@@ -83,16 +81,12 @@ def generate_launch_description():
     )
 
     # ---------------------------------------------------------
-    # 3. HV 차량 자동 생성 Loop (YAML 설정 기반)
+    # 3. HV 차량 자동 생성
     # ---------------------------------------------------------
-    print(f"\n========== Launching HV Vehicles: {len(hv_settings)} cars ==========\n")
-
     for hv in hv_settings:
         hv_id = hv['id']
         hv_path = hv['node_sequence']
         
-        print(f"[INFO] HV ID [{hv_id}] Path: {hv_path}")
-
         nodes.append(Node(
             package='bisa', 
             executable='global_path_pub_multi.py',
@@ -103,20 +97,19 @@ def generate_launch_description():
         ))
 
     # ---------------------------------------------------------
-    # 4. 동적 CAV 차량 노드 생성 Loop
+    # 4. 동적 CAV 차량 노드 생성
     # ---------------------------------------------------------
     active_ids = ros_params_dict.get("cav_ids", [1, 2, 3, 4])
     print(f"\n========== Launching CAV IDs: {active_ids} ==========\n")
 
     for index, cav_id in enumerate(active_ids):
         if index >= len(CAV_PATH_SETTINGS):
-            print(f"[WARN] CAV_{cav_id} 경로 부족으로 스킵")
             continue
 
         node_seq = CAV_PATH_SETTINGS[index]
         id_str = f"{cav_id:02d}"
 
-        # (A) Global Path Publisher
+        # (A) Global Path
         nodes.append(
             Node(
                 package="bisa",
@@ -128,8 +121,7 @@ def generate_launch_description():
             )
         )
 
-        # (B) Local Path Publisher
-        # [수정 포인트] 여기도 config_file 대신 ros_params_dict 전달
+        # (B) Local Path
         nodes.append(
             Node(
                 package="bisa",
@@ -151,13 +143,14 @@ def generate_launch_description():
         )
 
         # (C) MPC Path Tracker
+        # [수정] YAML에서 읽어온 mpc_config를 직접 전달
         nodes.append(
             Node(
                 package="bisa",
                 executable="mpc_path_tracker_cpp",
                 name=f"mpc_tracker_cav{id_str}",
                 output="screen",
-                parameters=[MPC_PARAMS, {"target_cav_id": cav_id}],
+                parameters=[mpc_config, {"target_cav_id": cav_id}],
                 remappings=[
                     ("/local_path", f"/local_path_cav{id_str}"),
                     ("/Ego_pose", f"/CAV_{id_str}"),
@@ -167,9 +160,7 @@ def generate_launch_description():
             )
         )
 
-    # ---------------------------------------------------------
     # 5. RViz2
-    # ---------------------------------------------------------
     nodes.append(
         Node(
             package="rviz2",
