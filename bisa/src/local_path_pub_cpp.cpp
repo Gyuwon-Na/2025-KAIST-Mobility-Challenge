@@ -15,13 +15,19 @@ namespace bisa
         RCLCPP_INFO(this->get_logger(), "Local Path Publisher C++ - 1kHz");
         RCLCPP_INFO(this->get_logger(), "Infinite Loop Mode with LapInfo");
         RCLCPP_INFO(this->get_logger(), "===========================================");
+
         // [추가] 내 차량 ID 파라미터
         this->declare_parameter("target_cav_id", 1);
         int target_id = this->get_parameter("target_cav_id").as_int();
         std::string id_str = (target_id < 10) ? "0" + std::to_string(target_id) : std::to_string(target_id);
 
-        RCLCPP_INFO(this->get_logger(), "Local Path Pub for CAV_%s", id_str.c_str());
-        // Global path는 사용자별로 다를 수 있으므로 user_global_path_cavXX 형식 권장
+        // ★ [추가] RViz 슬롯 파라미터
+        this->declare_parameter("rviz_slot", -1);
+        rviz_slot_ = this->get_parameter("rviz_slot").as_int();
+
+        RCLCPP_INFO(this->get_logger(), "Local Path Pub for CAV_%s (RViz Slot: %d)", id_str.c_str(), rviz_slot_);
+
+        // 기존 토픽 설정
         std::string global_path_topic = "/user_global_path_cav" + id_str;
         std::string pose_topic = "/CAV_" + id_str;
         std::string local_pub_topic = "/local_path_cav" + id_str;
@@ -38,12 +44,21 @@ namespace bisa
             std::bind(&LocalPathPubCpp::pose_callback, this, std::placeholders::_1));
 
         local_pub_ = this->create_publisher<nav_msgs::msg::Path>(local_pub_topic, 10);
-
-        // Lap info 등 다른 토픽들도 필요하면 suffix 붙임
         lap_info_pub_ = this->create_publisher<bisa::msg::LapInfo>(lap_info_topic, 10);
-
-        // Marker는 namespace 등으로 구분하거나 topic 명 변경
         marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/car_marker_" + id_str, 10);
+
+        // ★ [추가] RViz용 퍼블리셔 (슬롯이 유효할 때만)
+        if (rviz_slot_ >= 0)
+        {
+            std::string rviz_local_topic = "/viz/slot" + std::to_string(rviz_slot_) + "/local_path";
+            std::string rviz_marker_topic = "/viz/slot" + std::to_string(rviz_slot_) + "/car_marker";
+
+            rviz_local_pub_ = this->create_publisher<nav_msgs::msg::Path>(rviz_local_topic, 10);
+            rviz_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(rviz_marker_topic, 10);
+
+            RCLCPP_INFO(this->get_logger(), "RViz topics: %s, %s", rviz_local_topic.c_str(), rviz_marker_topic.c_str());
+        }
+
         // 1kHz timer
         timer_ = this->create_wall_timer(
             std::chrono::microseconds(1000),
@@ -111,6 +126,11 @@ namespace bisa
         marker.color.a = 0.8;
 
         marker_pub_->publish(marker);
+
+        if (rviz_marker_pub_)
+        {
+            rviz_marker_pub_->publish(marker);
+        }
     }
 
     void LocalPathPubCpp::publish_local_path()
@@ -237,6 +257,12 @@ namespace bisa
         }
 
         local_pub_->publish(local);
+
+        // ★ [추가] RViz용 토픽에도 발행
+        if (rviz_local_pub_)
+        {
+            rviz_local_pub_->publish(local);
+        }
     }
 
 }

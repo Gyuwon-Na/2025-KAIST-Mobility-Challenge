@@ -2,7 +2,6 @@ import os
 import yaml
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import ExecuteProcess  # [추가] Relay 실행을 위해 추가
 from ament_index_python.packages import get_package_share_directory
 
 # ==============================================================================
@@ -94,13 +93,15 @@ def generate_launch_description():
                 executable="global_path_pub_multi.py",
                 name=f"global_path_pub_hv{hv_id}",
                 output="screen",
-                parameters=[{"cav_id": hv_id, "node_sequence": hv_path}],
+                parameters=[
+                    {"cav_id": hv_id, "node_sequence": hv_path, "rviz_slot": -1}
+                ],
                 remappings=[("/user_global_path", f"/user_global_path_hv{hv_id}")],
             )
         )
 
     # ---------------------------------------------------------
-    # 4. 동적 CAV 차량 노드 생성 + RViz Topic Relay
+    # 4. 동적 CAV 차량 노드 생성 (RViz 슬롯 직접 발행)
     # ---------------------------------------------------------
     active_ids = ros_params_dict.get("cav_ids", [1, 2, 3, 4])
     print(f"\n========== Launching CAV IDs: {active_ids} ==========\n")
@@ -112,44 +113,57 @@ def generate_launch_description():
         node_seq = CAV_PATH_SETTINGS[index]
         id_str = f"{cav_id:02d}"  # 실제 CAV ID (예: "24", "05")
 
-        # [추가] RViz 시각화용 슬롯 번호 (0, 1, 2, 3)
-        # ID가 바뀌어도 RViz는 항상 slot0, slot1... 토픽만 구독하면 됩니다.
+        # ★ RViz 시각화용 슬롯 번호 (0, 1, 2, 3)
         rviz_slot = index
 
-        # ★ 핵심 변경: 인덱스 기반으로 YAML 슬롯 참조 (01, 02, 03, 04)
-        slot_str = f"{index + 1:02d}"  # 슬롯 번호 (1-based)
+        # 인덱스 기반으로 YAML 슬롯 참조 (01, 02, 03, 04)
+        slot_str = f"{index + 1:02d}"
         yaml_section_name = f"mpc_tracker_cav{slot_str}"
 
         # YAML에서 해당 슬롯의 파라미터 로드
         node_params = {}
         if yaml_section_name in full_config:
             node_params = full_config[yaml_section_name].get("ros__parameters", {})
-            print(f"  [CAV {cav_id:02d}] Using params from '{yaml_section_name}'")
+            print(
+                f"  [CAV {cav_id:02d}] Using params from '{yaml_section_name}' (RViz Slot {rviz_slot})"
+            )
         else:
             print(
                 f"  [CAV {cav_id:02d}] WARNING: '{yaml_section_name}' not found, using defaults"
             )
 
-        # (A) Global Path
+        # (A) Global Path - ★ rviz_slot 파라미터 추가
         nodes.append(
             Node(
                 package="bisa",
                 executable="global_path_pub_multi.py",
                 name=f"global_path_pub_cav{id_str}",
                 output="screen",
-                parameters=[{"cav_id": cav_id, "node_sequence": node_seq}],
+                parameters=[
+                    {
+                        "cav_id": cav_id,
+                        "node_sequence": node_seq,
+                        "rviz_slot": rviz_slot,  # ★ 추가
+                    }
+                ],
                 remappings=[("/user_global_path", f"/user_global_path_cav{id_str}")],
             )
         )
 
-        # (B) Local Path
+        # (B) Local Path - ★ rviz_slot 파라미터 추가
         nodes.append(
             Node(
                 package="bisa",
                 executable="local_path_pub_cpp",
                 name=f"local_path_pub_cav{id_str}",
                 output="screen",
-                parameters=[ros_params_dict, {"target_cav_id": cav_id}],
+                parameters=[
+                    ros_params_dict,
+                    {
+                        "target_cav_id": cav_id,
+                        "rviz_slot": rviz_slot,  # ★ 추가
+                    },
+                ],
                 remappings=[
                     ("/user_global_path", f"/user_global_path_cav{id_str}"),
                     ("/Ego_pose", f"/CAV_{id_str}"),
@@ -161,17 +175,13 @@ def generate_launch_description():
         )
 
         # (C) MPC Path Tracker
-        # ★ 노드 이름은 실제 CAV ID 기반, 파라미터는 슬롯에서 로드 + target_cav_id 덮어씌움
         nodes.append(
             Node(
                 package="bisa",
                 executable="mpc_path_tracker_cpp",
-                name=f"mpc_tracker_cav{id_str}",  # 실제 노드 이름: mpc_tracker_cav24 등
+                name=f"mpc_tracker_cav{id_str}",
                 output="screen",
-                parameters=[
-                    node_params,
-                    {"target_cav_id": cav_id},
-                ],  # ★ target_cav_id 자동 주입
+                parameters=[node_params, {"target_cav_id": cav_id}],
                 remappings=[
                     ("/local_path", f"/local_path_cav{id_str}"),
                     ("/Ego_pose", f"/CAV_{id_str}"),
@@ -181,55 +191,7 @@ def generate_launch_description():
             )
         )
 
-        # ---------------------------------------------------------
-        # [추가] Topic Relay for RViz (ID 변동 대응)
-        # ---------------------------------------------------------
-        # 실제 토픽 -> RViz 고정 슬롯 토픽으로 중계
-
-        # 1. Local Path Relay
-        nodes.append(
-            ExecuteProcess(
-                cmd=[
-                    "ros2",
-                    "run",
-                    "topic_tools",
-                    "relay",
-                    f"/local_path_cav{id_str}",
-                    f"/viz/slot{rviz_slot}/local_path",
-                ],
-                output="log",
-            )
-        )
-
-        # 2. Global Path Relay
-        nodes.append(
-            ExecuteProcess(
-                cmd=[
-                    "ros2",
-                    "run",
-                    "topic_tools",
-                    "relay",
-                    f"/user_global_path_cav{id_str}",
-                    f"/viz/slot{rviz_slot}/global_path",
-                ],
-                output="log",
-            )
-        )
-
-        # 3. Car Marker Relay
-        nodes.append(
-            ExecuteProcess(
-                cmd=[
-                    "ros2",
-                    "run",
-                    "topic_tools",
-                    "relay",
-                    f"/car_marker_cav{id_str}",
-                    f"/viz/slot{rviz_slot}/car_marker",
-                ],
-                output="log",
-            )
-        )
+        # ★ Topic Relay 완전 제거 - 각 노드에서 직접 /viz/slotX/ 토픽으로 발행
 
     # 5. RViz2
     nodes.append(

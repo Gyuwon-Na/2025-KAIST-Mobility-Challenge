@@ -41,6 +41,12 @@ namespace bisa
         rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr local_pub_;
         rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub_;
+
+        // 기존 멤버 변수들 아래에 추가
+        rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr rviz_local_pub_;
+        rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr rviz_marker_pub_;
+        int rviz_slot_ = -1; // -1이면 RViz 발행 비활성화
+
         rclcpp::Publisher<bisa::msg::LapInfo>::SharedPtr lap_info_pub_;
         rclcpp::TimerBase::SharedPtr timer_;
 
