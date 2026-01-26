@@ -128,7 +128,7 @@ class App:
         self.root = root
         self.node = node
         self.root.title("BISA Multi-CAV MPC Tuner")
-        self.root.geometry("600x750")
+        self.root.geometry("550x380")
 
         # 1. 파라미터 설정 메타데이터
         self.configs = [
@@ -139,15 +139,15 @@ class App:
             {
                 "name": "max_velocity",
                 "min": 0.0,
-                "max": 10.0,
+                "max": 2.0,
                 "res": 0.1,
                 "type": float,
             },
-            {"name": "max_accel", "min": 0.0, "max": 10.0, "res": 0.1, "type": float},
+            {"name": "max_accel", "min": 0.0, "max": 3.0, "res": 0.1, "type": float},
             {
                 "name": "max_angular_vel",
                 "min": 0.0,
-                "max": 10.0,
+                "max": 3.0,
                 "res": 0.1,
                 "type": float,
             },

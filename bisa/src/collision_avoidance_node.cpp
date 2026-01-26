@@ -488,6 +488,30 @@ namespace bisa
             if (accumulated_dist >= path_length)
                 break;
         }
+
+        if (!state.global_path.empty() && SAFETY_PATH_EXTRA_POINTS > 0)
+        {
+            Point2D last_point = state.dynamic_path.back();
+            double min_dist = 1e9;
+            size_t closest_idx = 0;
+
+            for (size_t i = 0; i < state.global_path.size(); ++i)
+            {
+                double d = last_point.dist_to(state.global_path[i]);
+                if (d < min_dist)
+                {
+                    min_dist = d;
+                    closest_idx = i;
+                }
+            }
+
+            size_t total = state.global_path.size();
+            for (int i = 1; i <= SAFETY_PATH_EXTRA_POINTS; ++i)
+            {
+                size_t idx = (closest_idx + i) % total;
+                state.dynamic_path.push_back(state.global_path[idx]);
+            }
+        }
     }
 
     void CollisionAvoidanceNode::update_cav_rear_path(int cav_id)

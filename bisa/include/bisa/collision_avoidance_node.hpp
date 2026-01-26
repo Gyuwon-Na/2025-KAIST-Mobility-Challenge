@@ -89,6 +89,9 @@ namespace bisa
         // ★★★ 후방 경로 길이 ★★★
         static constexpr double REAR_PATH_LENGTH = 0.4;
 
+        // ★★★ SAFETY PATH 추가 길이 ★★★
+        static constexpr int SAFETY_PATH_EXTRA_POINTS = 20;
+
         // ★★★ HV 뒤쪽 끝점 오프셋 (글로벌 패스 위에서 뒤로 이동) ★★★
         static constexpr double HV_REAR_OFFSET = 0.25;
 

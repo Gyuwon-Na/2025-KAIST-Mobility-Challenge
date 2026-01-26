@@ -8,7 +8,7 @@
 mpc_tracker_cav01:
   ros__parameters:
     Q_pos: 95.4    
-    Q_heading: 86.6
+    Q_heading: 85.6
     R_v: 0.5
     R_w: 0.6
     max_velocity: 1.2
@@ -20,7 +20,7 @@ mpc_tracker_cav01:
 mpc_tracker_cav02:
   ros__parameters:
     Q_pos: 95.4    
-    Q_heading: 86.6
+    Q_heading: 85.6
     R_v: 0.5
     R_w: 0.6
     max_velocity: 1.2
@@ -32,7 +32,7 @@ mpc_tracker_cav02:
 mpc_tracker_cav03:
   ros__parameters:
     Q_pos: 95.4    
-    Q_heading: 86.6
+    Q_heading: 85.6
     R_v: 0.5
     R_w: 0.6
     max_velocity: 1.2
@@ -44,7 +44,7 @@ mpc_tracker_cav03:
 mpc_tracker_cav04:
   ros__parameters:
     Q_pos: 95.4    
-    Q_heading: 86.6
+    Q_heading: 85.6
     R_v: 0.5
     R_w: 0.6
     max_velocity: 1.2
