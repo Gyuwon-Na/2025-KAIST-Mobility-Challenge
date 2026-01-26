@@ -134,8 +134,8 @@ class App:
         self.configs = [
             {"name": "Q_pos", "min": 0.0, "max": 200.0, "res": 0.1, "type": float},
             {"name": "Q_heading", "min": 0.0, "max": 200.0, "res": 0.1, "type": float},
-            {"name": "R_v", "min": 0.0, "max": 20.0, "res": 0.1, "type": float},
-            {"name": "R_w", "min": 0.0, "max": 20.0, "res": 0.1, "type": float},
+            {"name": "R_v", "min": 0.0, "max": 20.0, "res": 0.01, "type": float},
+            {"name": "R_w", "min": 0.0, "max": 20.0, "res": 0.01, "type": float},
             {
                 "name": "max_velocity",
                 "min": 0.0,

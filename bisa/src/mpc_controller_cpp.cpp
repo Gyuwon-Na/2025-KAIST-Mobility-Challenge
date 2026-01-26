@@ -157,7 +157,7 @@ namespace bisa
         double alpha = target_heading - theta0;
         double pure_pursuit_w = (2.0 * std::sin(alpha)) / distance;
 
-        double heading_correction = heading_error * heading_weight_factor * 0.5;
+        double heading_correction = heading_error * (params_.Q_heading / 30.0);
         double w_target = pure_pursuit_w + heading_correction;
 
         // R_w effect (angular smoothness)
