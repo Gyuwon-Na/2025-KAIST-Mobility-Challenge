@@ -104,6 +104,19 @@ namespace bisa
         double dy = targets[lookahead_idx][1] - y0;
         double distance = std::sqrt(dx * dx + dy * dy);
 
+        double min_dist = 1e9;
+        for (const auto &pose : local_path)
+        {
+            double path_x = pose.pose.position.x;
+            double path_y = pose.pose.position.y;
+            double d = std::sqrt(std::pow(path_x - x0, 2) + std::pow(path_y - y0, 2));
+            if (d < min_dist)
+            {
+                min_dist = d;
+            }
+        }
+        double real_cte = min_dist;
+
         if (distance < 0.01)
         {
             return output;
@@ -162,7 +175,7 @@ namespace bisa
 
         output.velocity = v_cmd;
         output.angular_velocity = w_cmd;
-        output.cross_track_error = distance;
+        output.cross_track_error = real_cte;
         output.heading_error = heading_error;
 
         double x = x0, y = y0, theta = theta0;
