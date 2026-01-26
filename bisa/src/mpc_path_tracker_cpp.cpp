@@ -49,7 +49,8 @@ namespace bisa
         // Publisher 생성
         accel_pub_ = this->create_publisher<geometry_msgs::msg::Accel>(accel_topic, 10);
         pred_pub_ = this->create_publisher<nav_msgs::msg::Path>("/mpc_predicted_path", 10);
-
+        cte_pub_ = this->create_publisher<std_msgs::msg::Float32>("/CAV_" + id_str + "_debug/cte", 10);
+        he_pub_ = this->create_publisher<std_msgs::msg::Float32>("/CAV_" + id_str + "_debug/heading_error", 10);
         // 1kHz timer
         timer_ = this->create_wall_timer(
             std::chrono::microseconds(1000),
@@ -113,6 +114,14 @@ namespace bisa
 
         publish_control(output.velocity, output.angular_velocity);
         publish_predicted_path(output.predicted_trajectory);
+
+        std_msgs::msg::Float32 cte_msg;
+        cte_msg.data = output.cross_track_error;
+        cte_pub_->publish(cte_msg);
+
+        std_msgs::msg::Float32 he_msg;
+        he_msg.data = output.heading_error;
+        he_pub_->publish(he_msg);
 
         auto now = this->now();
         if ((now - last_log_time_).seconds() > 2.0)
