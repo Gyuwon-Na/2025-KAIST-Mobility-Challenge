@@ -91,10 +91,28 @@ namespace bisa
         cav_entry_nodes_[2] = 37;
         cav_entry_nodes_[3] = 36;
         cav_entry_nodes_[4] = 47;
-        cav_colors_[1] = {1.0, 0.0, 0.0};
-        cav_colors_[2] = {0.0, 0.0, 1.0};
-        cav_colors_[3] = {0.0, 1.0, 0.0};
-        cav_colors_[4] = {1.0, 1.0, 0.0};
+
+        std::vector<std::array<double, 3>> palette = {
+            {1.0, 0.0, 0.0}, // Slot 1: Red
+            {0.0, 0.0, 1.0}, // Slot 2: Blue
+            {0.0, 1.0, 0.0}, // Slot 3: Green
+            {1.0, 1.0, 0.0}  // Slot 4: Yellow
+        };
+
+        cav_colors_.clear();
+        for (size_t i = 0; i < cav_ids_.size(); ++i)
+        {
+            int id = cav_ids_[i];
+            if (i < palette.size())
+            {
+                cav_colors_[id] = palette[i];
+            }
+            else
+            {
+                cav_colors_[id] = {1.0, 1.0, 1.0}; // 5번째 이상은 흰색
+            }
+        }
+
         for (int cav_id : cav_ids_)
         {
             prev_dist_to_entry_[cav_id] = 999.0;

@@ -2,6 +2,7 @@ import os
 import yaml
 from launch import LaunchDescription
 from launch_ros.actions import Node
+from launch.actions import ExecuteProcess  # [추가] Relay 실행을 위해 추가
 from ament_index_python.packages import get_package_share_directory
 
 # ==============================================================================
@@ -99,7 +100,7 @@ def generate_launch_description():
         )
 
     # ---------------------------------------------------------
-    # 4. 동적 CAV 차량 노드 생성
+    # 4. 동적 CAV 차량 노드 생성 + RViz Topic Relay
     # ---------------------------------------------------------
     active_ids = ros_params_dict.get("cav_ids", [1, 2, 3, 4])
     print(f"\n========== Launching CAV IDs: {active_ids} ==========\n")
@@ -110,6 +111,10 @@ def generate_launch_description():
 
         node_seq = CAV_PATH_SETTINGS[index]
         id_str = f"{cav_id:02d}"  # 실제 CAV ID (예: "24", "05")
+
+        # [추가] RViz 시각화용 슬롯 번호 (0, 1, 2, 3)
+        # ID가 바뀌어도 RViz는 항상 slot0, slot1... 토픽만 구독하면 됩니다.
+        rviz_slot = index
 
         # ★ 핵심 변경: 인덱스 기반으로 YAML 슬롯 참조 (01, 02, 03, 04)
         slot_str = f"{index + 1:02d}"  # 슬롯 번호 (1-based)
@@ -173,6 +178,56 @@ def generate_launch_description():
                     ("/Accel", f"/CAV_{id_str}_accel_raw"),
                     ("/mpc_predicted_path", f"/mpc_pred_cav{id_str}"),
                 ],
+            )
+        )
+
+        # ---------------------------------------------------------
+        # [추가] Topic Relay for RViz (ID 변동 대응)
+        # ---------------------------------------------------------
+        # 실제 토픽 -> RViz 고정 슬롯 토픽으로 중계
+
+        # 1. Local Path Relay
+        nodes.append(
+            ExecuteProcess(
+                cmd=[
+                    "ros2",
+                    "run",
+                    "topic_tools",
+                    "relay",
+                    f"/local_path_cav{id_str}",
+                    f"/viz/slot{rviz_slot}/local_path",
+                ],
+                output="log",
+            )
+        )
+
+        # 2. Global Path Relay
+        nodes.append(
+            ExecuteProcess(
+                cmd=[
+                    "ros2",
+                    "run",
+                    "topic_tools",
+                    "relay",
+                    f"/user_global_path_cav{id_str}",
+                    f"/viz/slot{rviz_slot}/global_path",
+                ],
+                output="log",
+            )
+        )
+
+        # 3. Car Marker Relay
+        nodes.append(
+            ExecuteProcess(
+                cmd=[
+                    "ros2",
+                    "run",
+                    "topic_tools",
+                    "relay",
+                    f"/car_marker_cav{id_str}",
+                    f"/viz/slot{rviz_slot}/car_marker",
+                ],
+                output="log",
             )
         )
 
