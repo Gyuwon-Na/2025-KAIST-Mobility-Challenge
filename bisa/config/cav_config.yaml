@@ -7,50 +7,50 @@
 # 슬롯 01
 mpc_tracker_cav01:
   ros__parameters:
-    Q_pos: 89.0         
-    Q_heading: 86.0
-    R_v: 1.0
-    R_w: 3.9
+    Q_pos: 95.4    
+    Q_heading: 86.6
+    R_v: 0.5
+    R_w: 0.6
     max_velocity: 1.2
     max_accel: 1.5
-    max_angular_vel: 2.0
-    horizon: 86          # horizon은 integer이므로 그대로
+    max_angular_vel: 2.8
+    horizon: 160
 
 # 슬롯 02
 mpc_tracker_cav02:
   ros__parameters:
-    Q_pos: 89.0          
-    Q_heading: 86.0
-    R_v: 1.0
-    R_w: 3.9
+    Q_pos: 95.4    
+    Q_heading: 86.6
+    R_v: 0.5
+    R_w: 0.6
     max_velocity: 1.2
     max_accel: 1.5
-    max_angular_vel: 2.0
-    horizon: 86
+    max_angular_vel: 2.8
+    horizon: 160
 
 # 슬롯 03
 mpc_tracker_cav03:
   ros__parameters:
-    Q_pos: 89.0          
-    Q_heading: 86.0
-    R_v: 1.0
-    R_w: 3.9
+    Q_pos: 95.4    
+    Q_heading: 86.6
+    R_v: 0.5
+    R_w: 0.6
     max_velocity: 1.2
     max_accel: 1.5
-    max_angular_vel: 2.0
-    horizon: 86
+    max_angular_vel: 2.8
+    horizon: 160
 
 # 슬롯 04
 mpc_tracker_cav04:
   ros__parameters:
-    Q_pos: 89.0          
-    Q_heading: 86.0
-    R_v: 1.0
-    R_w: 3.9
+    Q_pos: 95.4    
+    Q_heading: 86.6
+    R_v: 0.5
+    R_w: 0.6
     max_velocity: 1.2
     max_accel: 1.5
-    max_angular_vel: 2.0
-    horizon: 86
+    max_angular_vel: 2.8
+    horizon: 160
 
 # HV 설정
 hv_settings:
