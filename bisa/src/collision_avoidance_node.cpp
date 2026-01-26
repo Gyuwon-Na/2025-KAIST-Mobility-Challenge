@@ -837,6 +837,36 @@ namespace bisa
             double smooth_v = smooth_velocity(cav_id, target_v);
             msg.linear.x = smooth_v;
             msg.angular.z = (smooth_v > 0.05) ? raw.angular.z : 0.0;
+
+            if (should_stop && smooth_v < 0.05 && !state.correction_done)
+            {
+                if (state.correction_start_time == 0.0)
+                {
+                    state.correction_start_time = get_current_time();
+                    RCLCPP_INFO(this->get_logger(), "CAV%s: Correction start (BWD 0.4s)", format_cav_id(cav_id).c_str());
+                }
+
+                double elapsed = get_current_time() - state.correction_start_time;
+
+                if (elapsed < 0.2) // 후진 구간 (설정값 적용)
+                {
+                    msg.linear.x = -0.3;
+                    msg.angular.z = 0.0;
+                }
+                else
+                {
+                    state.correction_done = true;
+                    msg.linear.x = 0.0;
+                    msg.angular.z = 0.0;
+                    RCLCPP_INFO(this->get_logger(), "CAV%s: Correction done", format_cav_id(cav_id).c_str());
+                }
+            }
+            else if (!should_stop)
+            {
+                state.correction_done = false;
+                state.correction_start_time = 0.0;
+            }
+
             accel_pubs_[cav_id]->publish(msg);
         }
     }

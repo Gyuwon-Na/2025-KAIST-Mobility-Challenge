@@ -26,7 +26,7 @@ namespace bisa
         nav_msgs::msg::Path::SharedPtr global_path_;
         std::optional<geometry_msgs::msg::Pose> current_pose_;
 
-        size_t local_path_size_ = 80;
+        size_t local_path_size_ = 70;
         size_t current_waypoint_ = 0;
         int lap_count_ = 0;
 

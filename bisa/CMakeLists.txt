@@ -145,9 +145,4 @@ install(DIRECTORY hdmap_data
   DESTINATION share/${PROJECT_NAME}
 )
 
-# Waypoint 데이터 설치
-install(DIRECTORY waypoint
-  DESTINATION share/${PROJECT_NAME}
-)
-
 ament_package()

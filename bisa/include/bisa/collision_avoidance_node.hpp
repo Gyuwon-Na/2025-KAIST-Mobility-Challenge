@@ -63,6 +63,8 @@ namespace bisa
         bool in_roundabout = false;
         bool hv_danger = false;
         double current_curvature = 0;
+        bool correction_done = false;       // 정차 보정 완료 여부
+        double correction_start_time = 0.0; // 보정 시작 시간
     };
 
     class CollisionAvoidanceNode : public rclcpp::Node
