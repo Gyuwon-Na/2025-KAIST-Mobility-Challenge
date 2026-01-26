@@ -1,24 +1,25 @@
+# cav_config.yaml
 /**:
   ros__parameters:
-    cav_ids: [1, 2, 3, 4]    # CAV ID 목록
-    high_priority_ids: [1,2]
+    cav_ids: [1, 2, 3, 4]
+    high_priority_ids: [1, 2]
 
 # 슬롯 01
 mpc_tracker_cav01:
   ros__parameters:
-    Q_pos: 89
+    Q_pos: 89.0         
     Q_heading: 86.0
     R_v: 1.0
     R_w: 3.9
     max_velocity: 1.2
     max_accel: 1.5
     max_angular_vel: 2.0
-    horizon: 86
+    horizon: 86          # horizon은 integer이므로 그대로
 
 # 슬롯 02
 mpc_tracker_cav02:
   ros__parameters:
-    Q_pos: 89
+    Q_pos: 89.0          
     Q_heading: 86.0
     R_v: 1.0
     R_w: 3.9
@@ -30,7 +31,7 @@ mpc_tracker_cav02:
 # 슬롯 03
 mpc_tracker_cav03:
   ros__parameters:
-    Q_pos: 89
+    Q_pos: 89.0          
     Q_heading: 86.0
     R_v: 1.0
     R_w: 3.9
@@ -42,7 +43,7 @@ mpc_tracker_cav03:
 # 슬롯 04
 mpc_tracker_cav04:
   ros__parameters:
-    Q_pos: 89
+    Q_pos: 89.0          
     Q_heading: 86.0
     R_v: 1.0
     R_w: 3.9

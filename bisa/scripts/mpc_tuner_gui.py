@@ -17,45 +17,85 @@ class MPCTunerNode(Node):
 
         self.get_logger().info("Starting MPC Tuner GUI (Multi-Tab Edition)...")
 
-        # 1. 파라미터 선언 (Launch/YAML에서 넘어온 cav_ids 및 초기값 수신)
-        # cav_config.yaml의 cav_ids를 읽어옵니다.
+        # 1. 파라미터 선언 (Launch/YAML에서 넘어온 cav_ids 수신)
         self.declare_parameter("cav_ids", [1, 2, 3, 4])
         self.cav_ids = self.get_parameter("cav_ids").value
 
-        # MPC 제어 파라미터 초기값 (YAML의 mpc_settings 값들이 여기로 들어옴)
-        # 이 값들은 GUI가 켜질 때 모든 탭의 '초기값'으로 사용됩니다.
-        self.declare_parameter("Q_pos", 15.0)
-        self.declare_parameter("Q_heading", 8.0)
-        self.declare_parameter("R_v", 0.5)
-        self.declare_parameter("R_w", 0.5)
-        self.declare_parameter("max_velocity", 3.0)
-        self.declare_parameter("max_accel", 2.0)
-        self.declare_parameter("max_angular_vel", 2.0)
-        self.declare_parameter("horizon", 20)
+        # 2. MPC 파라미터 이름 목록 (기본값 정의용)
+        self.param_names = [
+            "Q_pos",
+            "Q_heading",
+            "R_v",
+            "R_w",
+            "max_velocity",
+            "max_accel",
+            "max_angular_vel",
+            "horizon",
+        ]
+
+        # 기본값 (슬롯별 파라미터가 없을 경우 사용)
+        self.default_values = {
+            "Q_pos": 15.0,
+            "Q_heading": 8.0,
+            "R_v": 0.5,
+            "R_w": 0.5,
+            "max_velocity": 3.0,
+            "max_accel": 2.0,
+            "max_angular_vel": 2.0,
+            "horizon": 20,
+        }
+
+        # 3. ★ 슬롯별 파라미터 선언 및 로드
+        # Launch에서 slot01_Q_pos, slot02_Q_pos 등의 형식으로 전달됨
+        self.slot_values = {}  # {slot_idx: {param_name: value}}
+
+        for slot_idx in range(1, 5):  # slot 01 ~ 04
+            slot_str = f"{slot_idx:02d}"
+            self.slot_values[slot_idx] = {}
+
+            for param_name in self.param_names:
+                full_param_name = f"slot{slot_str}_{param_name}"
+                default_val = self.default_values[param_name]
+
+                # 파라미터 선언
+                self.declare_parameter(full_param_name, default_val)
+
+                # 값 로드
+                try:
+                    val = self.get_parameter(full_param_name).value
+                    self.slot_values[slot_idx][param_name] = val
+                    self.get_logger().info(f"  Loaded {full_param_name} = {val}")
+                except Exception as e:
+                    self.slot_values[slot_idx][param_name] = default_val
+                    self.get_logger().warn(
+                        f"  Failed to load {full_param_name}, using default: {default_val}"
+                    )
 
         self.srv_clients = {}
 
-        # 2. 각 CAV 노드의 set_parameters 서비스 클라이언트 생성
+        # 4. 각 CAV 노드의 set_parameters 서비스 클라이언트 생성
         self.get_logger().info(f"Target CAV IDs: {self.cav_ids}")
         for cid in self.cav_ids:
-            # ID 포맷팅 (1 -> "01", 10 -> "10")
             id_str = f"{cid:02d}"
-            node_name = f"/mpc_tracker_cav{id_str}"  # mpc_path_tracker_cpp 노드 이름 규칙
+            node_name = f"/mpc_tracker_cav{id_str}"
             service_name = f"{node_name}/set_parameters"
 
             cli = self.create_client(SetParameters, service_name)
             self.srv_clients[cid] = cli
 
-            # 서비스 연결 대기 (비동기적으로 체크하거나 타임아웃 설정)
             if not cli.wait_for_service(timeout_sec=0.5):
                 self.get_logger().warn(f"Service {service_name} not ready yet.")
             else:
                 self.get_logger().info(f"Connected to {node_name}")
 
+    def get_slot_initial_value(self, slot_idx, param_name):
+        """슬롯별 초기값 반환 (1-based index)"""
+        if slot_idx in self.slot_values and param_name in self.slot_values[slot_idx]:
+            return self.slot_values[slot_idx][param_name]
+        return self.default_values.get(param_name, 0)
+
     def send_parameter_to_id(self, target_cav_id, name, value, param_type):
-        """
-        특정 CAV ID에게만 파라미터 변경 요청을 보냅니다.
-        """
+        """특정 CAV ID에게만 파라미터 변경 요청을 보냅니다."""
         if target_cav_id not in self.srv_clients:
             self.get_logger().error(f"CAV {target_cav_id} client not found!")
             return
@@ -65,12 +105,10 @@ class MPCTunerNode(Node):
             self.get_logger().warn(f"Service for CAV {target_cav_id} is not ready.")
             return
 
-        # 요청 객체 생성
         req = SetParameters.Request()
         param = Parameter()
         param.name = name
 
-        # 타입에 따른 값 설정
         if param_type == int:
             param.value.type = ParameterType.PARAMETER_INTEGER
             param.value.integer_value = int(value)
@@ -82,11 +120,7 @@ class MPCTunerNode(Node):
             param.value.bool_value = bool(value)
 
         req.parameters = [param]
-
-        # 비동기 전송
         future = cli.call_async(req)
-        # 콜백을 통해 성공 여부를 로그로 남길 수도 있습니다 (선택사항)
-        # future.add_done_callback(lambda f: self.get_logger().info(f"Updated {name} for CAV {target_cav_id}"))
 
 
 class App:
@@ -120,22 +154,11 @@ class App:
             {"name": "horizon", "min": 5, "max": 200, "res": 1, "type": int},
         ]
 
-        # 2. 초기값 로드 (YAML/Launch 파일에서 읽은 공통 초기값)
-        print(">>> Loading initial values from Launch/YAML...")
-        self.initial_values = {}
-        for cfg in self.configs:
-            try:
-                val = self.node.get_parameter(cfg["name"]).value
-                self.initial_values[cfg["name"]] = val
-            except Exception as e:
-                print(f"   ! Failed to get {cfg['name']}: {e}")
-                self.initial_values[cfg["name"]] = 0
-
-        # 3. 탭 컨트롤 (Notebook) 생성
+        # 2. 탭 컨트롤 (Notebook) 생성
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(expand=True, fill="both", padx=5, pady=5)
 
-        # 4. 각 CAV ID 별로 탭 생성
+        # 3. 각 CAV ID 별로 탭 생성
         self.create_tabs_for_cavs()
 
         # 하단 상태바
@@ -153,16 +176,17 @@ class App:
 
     def create_tabs_for_cavs(self):
         """cav_ids 리스트를 순회하며 탭을 생성합니다."""
-        for cid in self.node.cav_ids:
+        for index, cid in enumerate(self.node.cav_ids):
             # 탭 프레임 생성
             tab_frame = ttk.Frame(self.notebook)
             tab_title = f"CAV {cid:02d}"  # 예: CAV 01, CAV 24
             self.notebook.add(tab_frame, text=tab_title)
 
-            # 해당 탭 내부에 컨트롤 생성
-            self.create_controls_for_tab(tab_frame, cid)
+            # ★ 슬롯 인덱스 전달 (1-based: index 0 -> slot 1)
+            slot_idx = index + 1
+            self.create_controls_for_tab(tab_frame, cid, slot_idx)
 
-    def create_controls_for_tab(self, parent_frame, cav_id):
+    def create_controls_for_tab(self, parent_frame, cav_id, slot_idx):
         """특정 CAV ID를 위한 컨트롤들을 생성합니다."""
 
         # 스크롤 기능 추가
@@ -180,10 +204,10 @@ class App:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        # 타이틀
+        # 타이틀 (슬롯 정보 포함)
         tk.Label(
             scroll_content,
-            text=f"Tuning Parameters for CAV {cav_id:02d}",
+            text=f"Tuning Parameters for CAV {cav_id:02d} (Slot {slot_idx:02d})",
             font=("Arial", 12, "bold"),
             fg="#333333",
             pady=10,
@@ -191,9 +215,9 @@ class App:
 
         # 각 파라미터 행 생성
         for cfg in self.configs:
-            self.create_row(scroll_content, cfg, cav_id)
+            self.create_row(scroll_content, cfg, cav_id, slot_idx)
 
-    def create_row(self, parent, cfg, cav_id):
+    def create_row(self, parent, cfg, cav_id, slot_idx):
         frame = tk.Frame(parent, pady=5)
         frame.pack(fill="x", padx=10)
 
@@ -202,8 +226,8 @@ class App:
             frame, text=cfg["name"], width=16, anchor="w", font=("Consolas", 10, "bold")
         ).pack(side="left")
 
-        # 2. 변수 (Int/Double) - 초기값 설정
-        init_val = self.initial_values.get(cfg["name"], 0)
+        # 2. ★ 슬롯별 초기값 가져오기
+        init_val = self.node.get_slot_initial_value(slot_idx, cfg["name"])
 
         if cfg["type"] == int:
             var = tk.IntVar(value=int(init_val))
@@ -234,7 +258,6 @@ class App:
             variable=var,
             showvalue=0,
             length=220,
-            # command 콜백에서도 cav_id 캡처 필수
             command=lambda val, c=cav_id, n=cfg["name"], t=cfg[
                 "type"
             ]: self.node.send_parameter_to_id(c, n, val, t),

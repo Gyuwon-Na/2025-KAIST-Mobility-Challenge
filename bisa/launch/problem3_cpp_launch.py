@@ -44,6 +44,17 @@ def generate_launch_description():
     # HV 설정 추출
     hv_settings = full_config.get("hv_settings", [])
 
+    # ★ [추가] GUI용 슬롯별 파라미터 딕셔너리 생성
+    gui_slot_params = {}
+    for slot_idx in range(1, 5):  # slot 01 ~ 04
+        slot_str = f"{slot_idx:02d}"
+        yaml_section = f"mpc_tracker_cav{slot_str}"
+        if yaml_section in full_config:
+            slot_params = full_config[yaml_section].get("ros__parameters", {})
+            # prefix 붙여서 저장 (예: slot01_Q_pos, slot01_Q_heading, ...)
+            for key, value in slot_params.items():
+                gui_slot_params[f"slot{slot_str}_{key}"] = value
+
     nodes = []
 
     # ---------------------------------------------------------
@@ -58,14 +69,14 @@ def generate_launch_description():
         )
     )
 
-    # MPC Tuner GUI
+    # MPC Tuner GUI - ★ 슬롯별 파라미터도 함께 전달
     nodes.append(
         Node(
             package="bisa",
             executable="mpc_tuner_gui.py",
             name="mpc_tuner_gui",
             output="screen",
-            parameters=[ros_params_dict, mpc_config_default],
+            parameters=[ros_params_dict, mpc_config_default, gui_slot_params],
         )
     )
 
@@ -143,7 +154,7 @@ def generate_launch_description():
                     {
                         "cav_id": cav_id,
                         "node_sequence": node_seq,
-                        "rviz_slot": rviz_slot,  # ★ 추가
+                        "rviz_slot": rviz_slot,
                     }
                 ],
                 remappings=[("/user_global_path", f"/user_global_path_cav{id_str}")],
@@ -161,7 +172,7 @@ def generate_launch_description():
                     ros_params_dict,
                     {
                         "target_cav_id": cav_id,
-                        "rviz_slot": rviz_slot,  # ★ 추가
+                        "rviz_slot": rviz_slot,
                     },
                 ],
                 remappings=[
@@ -190,8 +201,6 @@ def generate_launch_description():
                 ],
             )
         )
-
-        # ★ Topic Relay 완전 제거 - 각 노드에서 직접 /viz/slotX/ 토픽으로 발행
 
     # 5. RViz2
     nodes.append(
