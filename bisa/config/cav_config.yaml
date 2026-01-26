@@ -1,19 +1,57 @@
 /**:
   ros__parameters:
-    cav_ids: [24, 5, 6, 9]
-    high_priority_ids: [24, 5]
-    target_cav_id: 24
+    cav_ids: [1, 2, 3, 4]    # CAV ID 목록
+    high_priority_ids: [1,2]
 
-    mpc_settings:
-      Q_pos: 95.4
-      Q_heading: 85.6
-      R_v: 0.5
-      R_w: 0.6
-      max_velocity: 1.2
-      max_accel: 1.5
-      max_angular_vel: 2.8
-      horizon: 160
+# 슬롯 01
+mpc_tracker_cav01:
+  ros__parameters:
+    Q_pos: 174.0
+    Q_heading: 55.0
+    R_v: 0.4
+    R_w: 0.2
+    max_velocity: 1.2
+    max_accel: 1.5
+    max_angular_vel: 2.8
+    horizon: 160
 
+# 슬롯 02
+mpc_tracker_cav02:
+  ros__parameters:
+    Q_pos: 150.0
+    Q_heading: 40.0
+    R_v: 0.8
+    R_w: 0.5
+    max_velocity: 1.5
+    max_accel: 1.5
+    max_angular_vel: 2.8
+    horizon: 160
+
+# 슬롯 03
+mpc_tracker_cav03:
+  ros__parameters:
+    Q_pos: 174.0
+    Q_heading: 55.0
+    R_v: 0.4
+    R_w: 0.2
+    max_velocity: 1.2
+    max_accel: 1.5
+    max_angular_vel: 2.8
+    horizon: 160
+
+# 슬롯 04
+mpc_tracker_cav04:
+  ros__parameters:
+    Q_pos: 174.0
+    Q_heading: 55.0
+    R_v: 0.4
+    R_w: 0.2
+    max_velocity: 1.2
+    max_accel: 1.5
+    max_angular_vel: 2.8
+    horizon: 160
+
+# HV 설정
 hv_settings:
   - id: 19
     node_sequence: [38, 41, 62, 38]

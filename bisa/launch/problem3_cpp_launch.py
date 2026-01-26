@@ -14,6 +14,7 @@ CAV_PATH_SETTINGS = [
     [16, 61, 47, 41, 42, 8, 11, 16],
 ]
 
+
 def load_yaml_file(file_path):
     try:
         with open(file_path, "r") as f:
@@ -22,6 +23,7 @@ def load_yaml_file(file_path):
         print(f"[ERROR] Config 파일 읽기 실패: {e}")
         return {}
 
+
 def generate_launch_description():
     pkg_dir = get_package_share_directory("bisa")
     config_file = os.path.join(pkg_dir, "config", "cav_config.yaml")
@@ -29,16 +31,15 @@ def generate_launch_description():
 
     # 1. YAML 파일 로드
     full_config = load_yaml_file(config_file)
-    
-    # 파라미터 추출
+
+    # 공통 파라미터 추출
     try:
         ros_params_dict = full_config["/**"]["ros__parameters"]
-        # MPC 파라미터 분리 (없으면 빈 딕셔너리)
-        mpc_config = ros_params_dict.get("mpc_settings", {})
+        mpc_config_default = ros_params_dict.get("mpc_settings", {})
     except KeyError:
         print("[WARN] YAML 구조 에러. 기본값을 사용합니다.")
         ros_params_dict = {"cav_ids": [1, 2, 3, 4]}
-        mpc_config = {}
+        mpc_config_default = {}
 
     # HV 설정 추출
     hv_settings = full_config.get("hv_settings", [])
@@ -57,26 +58,25 @@ def generate_launch_description():
         )
     )
 
-    # [수정] MPC Tuner GUI 실행 (YAML 파라미터 전달)
-    # GUI가 실행되면서 이 값들로 초기 트랙바 위치를 잡고, 
-    # cav_ids 정보를 통해 누구에게 명령을 보낼지 결정합니다.
+    # MPC Tuner GUI
     nodes.append(
         Node(
             package="bisa",
             executable="mpc_tuner_gui.py",
             name="mpc_tuner_gui",
             output="screen",
-            parameters=[ros_params_dict, mpc_config], # cav_ids와 mpc설정 모두 전달
+            parameters=[ros_params_dict, mpc_config_default],
         )
     )
 
+    # 충돌 방지 노드
     nodes.append(
         Node(
             package="bisa",
             executable="collision_avoidance_node_cpp",
             name="collision_avoidance_node",
             output="screen",
-            parameters=[ros_params_dict], 
+            parameters=[ros_params_dict],
         )
     )
 
@@ -84,17 +84,19 @@ def generate_launch_description():
     # 3. HV 차량 자동 생성
     # ---------------------------------------------------------
     for hv in hv_settings:
-        hv_id = hv['id']
-        hv_path = hv['node_sequence']
-        
-        nodes.append(Node(
-            package='bisa', 
-            executable='global_path_pub_multi.py',
-            name=f'global_path_pub_hv{hv_id}', 
-            output='screen',
-            parameters=[{'cav_id': hv_id, 'node_sequence': hv_path}],
-            remappings=[('/user_global_path', f'/user_global_path_hv{hv_id}')]
-        ))
+        hv_id = hv["id"]
+        hv_path = hv["node_sequence"]
+
+        nodes.append(
+            Node(
+                package="bisa",
+                executable="global_path_pub_multi.py",
+                name=f"global_path_pub_hv{hv_id}",
+                output="screen",
+                parameters=[{"cav_id": hv_id, "node_sequence": hv_path}],
+                remappings=[("/user_global_path", f"/user_global_path_hv{hv_id}")],
+            )
+        )
 
     # ---------------------------------------------------------
     # 4. 동적 CAV 차량 노드 생성
@@ -107,7 +109,21 @@ def generate_launch_description():
             continue
 
         node_seq = CAV_PATH_SETTINGS[index]
-        id_str = f"{cav_id:02d}"
+        id_str = f"{cav_id:02d}"  # 실제 CAV ID (예: "24", "05")
+
+        # ★ 핵심 변경: 인덱스 기반으로 YAML 슬롯 참조 (01, 02, 03, 04)
+        slot_str = f"{index + 1:02d}"  # 슬롯 번호 (1-based)
+        yaml_section_name = f"mpc_tracker_cav{slot_str}"
+
+        # YAML에서 해당 슬롯의 파라미터 로드
+        node_params = {}
+        if yaml_section_name in full_config:
+            node_params = full_config[yaml_section_name].get("ros__parameters", {})
+            print(f"  [CAV {cav_id:02d}] Using params from '{yaml_section_name}'")
+        else:
+            print(
+                f"  [CAV {cav_id:02d}] WARNING: '{yaml_section_name}' not found, using defaults"
+            )
 
         # (A) Global Path
         nodes.append(
@@ -128,10 +144,7 @@ def generate_launch_description():
                 executable="local_path_pub_cpp",
                 name=f"local_path_pub_cav{id_str}",
                 output="screen",
-                parameters=[
-                    ros_params_dict, 
-                    {"target_cav_id": cav_id}
-                ],
+                parameters=[ros_params_dict, {"target_cav_id": cav_id}],
                 remappings=[
                     ("/user_global_path", f"/user_global_path_cav{id_str}"),
                     ("/Ego_pose", f"/CAV_{id_str}"),
@@ -143,14 +156,17 @@ def generate_launch_description():
         )
 
         # (C) MPC Path Tracker
-        # [수정] YAML에서 읽어온 mpc_config를 직접 전달
+        # ★ 노드 이름은 실제 CAV ID 기반, 파라미터는 슬롯에서 로드 + target_cav_id 덮어씌움
         nodes.append(
             Node(
                 package="bisa",
                 executable="mpc_path_tracker_cpp",
-                name=f"mpc_tracker_cav{id_str}",
+                name=f"mpc_tracker_cav{id_str}",  # 실제 노드 이름: mpc_tracker_cav24 등
                 output="screen",
-                parameters=[mpc_config, {"target_cav_id": cav_id}],
+                parameters=[
+                    node_params,
+                    {"target_cav_id": cav_id},
+                ],  # ★ target_cav_id 자동 주입
                 remappings=[
                     ("/local_path", f"/local_path_cav{id_str}"),
                     ("/Ego_pose", f"/CAV_{id_str}"),
