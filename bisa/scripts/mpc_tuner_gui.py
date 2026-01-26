@@ -15,7 +15,7 @@ class MPCTunerNode(Node):
     def __init__(self):
         super().__init__("mpc_tuner_gui")
 
-        self.get_logger().info("Starting MPC Tuner GUI (Multi-Tab Edition)...")
+        # self.get_logger().info("Starting MPC Tuner GUI (Multi-Tab Edition)...")
 
         # 1. 파라미터 선언 (Launch/YAML에서 넘어온 cav_ids 수신)
         self.declare_parameter("cav_ids", [1, 2, 3, 4])
@@ -64,17 +64,17 @@ class MPCTunerNode(Node):
                 try:
                     val = self.get_parameter(full_param_name).value
                     self.slot_values[slot_idx][param_name] = val
-                    self.get_logger().info(f"  Loaded {full_param_name} = {val}")
+                    # self.get_logger().info(f"  Loaded {full_param_name} = {val}")
                 except Exception as e:
                     self.slot_values[slot_idx][param_name] = default_val
-                    self.get_logger().warn(
-                        f"  Failed to load {full_param_name}, using default: {default_val}"
-                    )
+                    # self.get_logger().warn(
+                    #     f"  Failed to load {full_param_name}, using default: {default_val}"
+                    # )
 
         self.srv_clients = {}
 
         # 4. 각 CAV 노드의 set_parameters 서비스 클라이언트 생성
-        self.get_logger().info(f"Target CAV IDs: {self.cav_ids}")
+        # self.get_logger().info(f"Target CAV IDs: {self.cav_ids}")
         for cid in self.cav_ids:
             id_str = f"{cid:02d}"
             node_name = f"/mpc_tracker_cav{id_str}"
@@ -83,10 +83,10 @@ class MPCTunerNode(Node):
             cli = self.create_client(SetParameters, service_name)
             self.srv_clients[cid] = cli
 
-            if not cli.wait_for_service(timeout_sec=0.5):
-                self.get_logger().warn(f"Service {service_name} not ready yet.")
-            else:
-                self.get_logger().info(f"Connected to {node_name}")
+            # if not cli.wait_for_service(timeout_sec=0.5):
+            #     self.get_logger().warn(f"Service {service_name} not ready yet.")
+            # else:
+            #     self.get_logger().info(f"Connected to {node_name}")
 
     def get_slot_initial_value(self, slot_idx, param_name):
         """슬롯별 초기값 반환 (1-based index)"""
@@ -97,12 +97,12 @@ class MPCTunerNode(Node):
     def send_parameter_to_id(self, target_cav_id, name, value, param_type):
         """특정 CAV ID에게만 파라미터 변경 요청을 보냅니다."""
         if target_cav_id not in self.srv_clients:
-            self.get_logger().error(f"CAV {target_cav_id} client not found!")
+            # self.get_logger().error(f"CAV {target_cav_id} client not found!")
             return
 
         cli = self.srv_clients[target_cav_id]
         if not cli.service_is_ready():
-            self.get_logger().warn(f"Service for CAV {target_cav_id} is not ready.")
+            # self.get_logger().warn(f"Service for CAV {target_cav_id} is not ready.")
             return
 
         req = SetParameters.Request()

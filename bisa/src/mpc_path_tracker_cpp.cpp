@@ -7,16 +7,16 @@ namespace bisa
         : Node("mpc_path_tracker_cpp"), last_log_time_(this->now())
     {
 
-        RCLCPP_INFO(this->get_logger(), "===========================================");
-        RCLCPP_INFO(this->get_logger(), "MPC Path Tracker C++ - 1kHz");
-        RCLCPP_INFO(this->get_logger(), "===========================================");
+        // RCLCPP_INFO(this->get_logger(), "===========================================");
+        // RCLCPP_INFO(this->get_logger(), "MPC Path Tracker C++ - 1kHz");
+        // RCLCPP_INFO(this->get_logger(), "===========================================");
 
         this->declare_parameter("target_cav_id", 1);
         int target_id = this->get_parameter("target_cav_id").as_int();
         // ID 포맷팅 (예: 1 -> "01", 24 -> "24")
         std::string id_str = (target_id < 10) ? "0" + std::to_string(target_id) : std::to_string(target_id);
 
-        RCLCPP_INFO(this->get_logger(), "MPC Tracker for CAV_%s Started", id_str.c_str());
+        // RCLCPP_INFO(this->get_logger(), "MPC Tracker for CAV_%s Started", id_str.c_str());
 
         // Parameters
         this->declare_parameter("Q_pos", 15.0);
@@ -55,7 +55,7 @@ namespace bisa
             std::chrono::microseconds(1000),
             std::bind(&MPCPathTrackerCpp::control_loop, this));
 
-        RCLCPP_INFO(this->get_logger(), "Ready (1kHz)");
+        // RCLCPP_INFO(this->get_logger(), "Ready (1kHz)");
     }
 
     void MPCPathTrackerCpp::update_controller_params()
@@ -77,10 +77,10 @@ namespace bisa
         const std::vector<rclcpp::Parameter> &params)
     {
 
-        for (const auto &param : params)
-        {
-            RCLCPP_INFO(this->get_logger(), "Param updated: %s", param.get_name().c_str());
-        }
+        // for (const auto &param : params)
+        // {
+        //     RCLCPP_INFO(this->get_logger(), "Param updated: %s", param.get_name().c_str());
+        // }
 
         update_controller_params();
 
@@ -117,8 +117,8 @@ namespace bisa
         auto now = this->now();
         if ((now - last_log_time_).seconds() > 2.0)
         {
-            RCLCPP_INFO(this->get_logger(), "MPC | v: %.2f m/s, w: %.3f rad/s",
-                        output.velocity, output.angular_velocity);
+            // RCLCPP_INFO(this->get_logger(), "MPC | v: %.2f m/s, w: %.3f rad/s",
+            //             output.velocity, output.angular_velocity);
             last_log_time_ = now;
         }
     }

@@ -11,10 +11,10 @@ namespace bisa
           lap_start_time_(this->now())
     {
 
-        RCLCPP_INFO(this->get_logger(), "===========================================");
-        RCLCPP_INFO(this->get_logger(), "Local Path Publisher C++ - 1kHz");
-        RCLCPP_INFO(this->get_logger(), "Infinite Loop Mode with LapInfo");
-        RCLCPP_INFO(this->get_logger(), "===========================================");
+        // RCLCPP_INFO(this->get_logger(), "===========================================");
+        // RCLCPP_INFO(this->get_logger(), "Local Path Publisher C++ - 1kHz");
+        // RCLCPP_INFO(this->get_logger(), "Infinite Loop Mode with LapInfo");
+        // RCLCPP_INFO(this->get_logger(), "===========================================");
 
         // [추가] 내 차량 ID 파라미터
         this->declare_parameter("target_cav_id", 1);
@@ -25,7 +25,7 @@ namespace bisa
         this->declare_parameter("rviz_slot", -1);
         rviz_slot_ = this->get_parameter("rviz_slot").as_int();
 
-        RCLCPP_INFO(this->get_logger(), "Local Path Pub for CAV_%s (RViz Slot: %d)", id_str.c_str(), rviz_slot_);
+        // RCLCPP_INFO(this->get_logger(), "Local Path Pub for CAV_%s (RViz Slot: %d)", id_str.c_str(), rviz_slot_);
 
         // 기존 토픽 설정
         std::string global_path_topic = "/user_global_path_cav" + id_str;
@@ -56,7 +56,7 @@ namespace bisa
             rviz_local_pub_ = this->create_publisher<nav_msgs::msg::Path>(rviz_local_topic, 10);
             rviz_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(rviz_marker_topic, 10);
 
-            RCLCPP_INFO(this->get_logger(), "RViz topics: %s, %s", rviz_local_topic.c_str(), rviz_marker_topic.c_str());
+            // RCLCPP_INFO(this->get_logger(), "RViz topics: %s, %s", rviz_local_topic.c_str(), rviz_marker_topic.c_str());
         }
 
         // 1kHz timer
@@ -64,15 +64,15 @@ namespace bisa
             std::chrono::microseconds(1000),
             std::bind(&LocalPathPubCpp::publish_local_path, this));
 
-        RCLCPP_INFO(this->get_logger(), "Ready!");
+        // RCLCPP_INFO(this->get_logger(), "Ready!");
     }
 
     void LocalPathPubCpp::global_path_callback(const nav_msgs::msg::Path::SharedPtr msg)
     {
-        if (!global_path_)
-        {
-            // RCLCPP_INFO(this->get_logger(), "Global Path: %zu pts", msg->poses.size());
-        }
+        // if (!global_path_)
+        // {
+        //     RCLCPP_INFO(this->get_logger(), "Global Path: %zu pts", msg->poses.size());
+        // }
         global_path_ = msg;
     }
 
@@ -211,9 +211,9 @@ namespace bisa
         {
             lap_count_++;
             lap_start_time_ = this->now();
-            RCLCPP_INFO(this->get_logger(),
-                        "🏁 Lap %d completed! Total distance: %.2fm",
-                        lap_count_, total_distance_);
+            // RCLCPP_INFO(this->get_logger(),
+            //             "🏁 Lap %d completed! Total distance: %.2fm",
+            //             lap_count_, total_distance_);
         }
 
         current_waypoint_ = closest;
@@ -239,9 +239,9 @@ namespace bisa
         auto now = this->now();
         if ((now - last_log_time_).seconds() > 10.0)
         {
-            RCLCPP_INFO(this->get_logger(),
-                        "Lap %d | Progress: %.1f%% | Time: %.1fs | Distance: %.2fm",
-                        lap_count_, progress, elapsed_time, total_distance_);
+            // RCLCPP_INFO(this->get_logger(),
+            //             "Lap %d | Progress: %.1f%% | Time: %.1fs | Distance: %.2fm",
+            //             lap_count_, progress, elapsed_time, total_distance_);
             last_log_time_ = now;
         }
 

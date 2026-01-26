@@ -20,7 +20,7 @@ def load_yaml_file(file_path):
         with open(file_path, "r") as f:
             return yaml.safe_load(f)
     except Exception as e:
-        print(f"[ERROR] Config 파일 읽기 실패: {e}")
+        # print(f"[ERROR] Config 파일 읽기 실패: {e}")
         return {}
 
 
@@ -37,7 +37,7 @@ def generate_launch_description():
         ros_params_dict = full_config["/**"]["ros__parameters"]
         mpc_config_default = ros_params_dict.get("mpc_settings", {})
     except KeyError:
-        print("[WARN] YAML 구조 에러. 기본값을 사용합니다.")
+        # print("[WARN] YAML 구조 에러. 기본값을 사용합니다.")
         ros_params_dict = {"cav_ids": [1, 2, 3, 4]}
         mpc_config_default = {}
 
@@ -115,7 +115,7 @@ def generate_launch_description():
     # 4. 동적 CAV 차량 노드 생성 (RViz 슬롯 직접 발행)
     # ---------------------------------------------------------
     active_ids = ros_params_dict.get("cav_ids", [1, 2, 3, 4])
-    print(f"\n========== Launching CAV IDs: {active_ids} ==========\n")
+    # print(f"\n========== Launching CAV IDs: {active_ids} ==========\n")
 
     for index, cav_id in enumerate(active_ids):
         if index >= len(CAV_PATH_SETTINGS):
@@ -135,13 +135,13 @@ def generate_launch_description():
         node_params = {}
         if yaml_section_name in full_config:
             node_params = full_config[yaml_section_name].get("ros__parameters", {})
-            print(
-                f"  [CAV {cav_id:02d}] Using params from '{yaml_section_name}' (RViz Slot {rviz_slot})"
-            )
-        else:
-            print(
-                f"  [CAV {cav_id:02d}] WARNING: '{yaml_section_name}' not found, using defaults"
-            )
+            # print(
+            #     f"  [CAV {cav_id:02d}] Using params from '{yaml_section_name}' (RViz Slot {rviz_slot})"
+            # )
+        # else:
+        #     print(
+        #         f"  [CAV {cav_id:02d}] WARNING: '{yaml_section_name}' not found, using defaults"
+        #     )
 
         # (A) Global Path - ★ rviz_slot 파라미터 추가
         nodes.append(

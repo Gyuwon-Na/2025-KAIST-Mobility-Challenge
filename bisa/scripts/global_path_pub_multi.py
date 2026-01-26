@@ -35,12 +35,12 @@ class GlobalPathPublisherMulti(Node):
             self.get_parameter("rviz_slot").get_parameter_value().integer_value
         )
 
-        self.get_logger().info("=" * 60)
-        self.get_logger().info(
-            f"Global Path Publisher - CAV{self.cav_id:02d} (RViz Slot: {self.rviz_slot})"
-        )
-        self.get_logger().info(f"Node Sequence: {self.node_sequence_input}")
-        self.get_logger().info("=" * 60)
+        # self.get_logger().info("=" * 60)
+        # self.get_logger().info(
+        #     f"Global Path Publisher - CAV{self.cav_id:02d} (RViz Slot: {self.rviz_slot})"
+        # )
+        # self.get_logger().info(f"Node Sequence: {self.node_sequence_input}")
+        # self.get_logger().info("=" * 60)
 
         qos = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.global_path_pub = self.create_publisher(Path, "/user_global_path", qos)
@@ -49,31 +49,31 @@ class GlobalPathPublisherMulti(Node):
         if self.rviz_slot >= 0:
             rviz_topic = f"/viz/slot{self.rviz_slot}/global_path"
             self.rviz_global_pub = self.create_publisher(Path, rviz_topic, qos)
-            self.get_logger().info(f"RViz topic: {rviz_topic}")
+            # self.get_logger().info(f"RViz topic: {rviz_topic}")
 
         # HDMap 경로
         try:
             package_share = get_package_share_directory("bisa")
             load_path = os.path.join(package_share, "hdmap_data")
-            self.get_logger().info(f"Loading HD Map from: {load_path}")
+            # self.get_logger().info(f"Loading HD Map from: {load_path}")
         except:
             workspace_src = os.path.join(
                 os.path.expanduser("~"), "Mobility_Challenge_Simulator", "src", "bisa"
             )
             load_path = os.path.join(workspace_src, "hdmap_data")
-            self.get_logger().warn(f"Using source directory: {load_path}")
+            # self.get_logger().warn(f"Using source directory: {load_path}")
 
         if not os.path.exists(load_path):
-            self.get_logger().error(f"HD map not found at: {load_path}")
+            # self.get_logger().error(f"HD map not found at: {load_path}")
             sys.exit(1)
 
         mgeo = MGeoPlannerMap.create_instance_from_json(load_path)
         self.nodes = mgeo.node_set.nodes
         self.links = mgeo.link_set.lines
 
-        self.get_logger().info(
-            f"Loaded: {len(self.nodes)} nodes, {len(self.links)} links"
-        )
+        # self.get_logger().info(
+        #     f"Loaded: {len(self.nodes)} nodes, {len(self.links)} links"
+        # )
 
         self.planner = DijkstraPlanner(
             self.nodes, self.links, enable_lane_change=True, lane_change_distance=0.2
@@ -108,12 +108,12 @@ class GlobalPathPublisherMulti(Node):
                 msg.poses.append(pose)
 
             self.global_path_msg = msg
-            self.get_logger().info(
-                f"✔ CAV{self.cav_id:02d} Path Ready! {len(msg.poses)} points"
-            )
+            # self.get_logger().info(
+            #     f"✔ CAV{self.cav_id:02d} Path Ready! {len(msg.poses)} points"
+            # )
 
         except Exception as e:
-            self.get_logger().error(f"Failed to generate path: {e}")
+            # self.get_logger().error(f"Failed to generate path: {e}")
             import traceback
 
             traceback.print_exc()

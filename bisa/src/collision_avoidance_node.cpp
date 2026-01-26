@@ -22,14 +22,14 @@ namespace bisa
     {
         load_parameters();
 
-        RCLCPP_INFO(this->get_logger(), "============================================================");
-        RCLCPP_INFO(this->get_logger(), "Collision Avoidance Node v35.0");
-        RCLCPP_INFO(this->get_logger(), "Features:");
-        RCLCPP_INFO(this->get_logger(), "  - HV from behind detection (%.2fm back)", HV_REAR_OFFSET);
-        RCLCPP_INFO(this->get_logger(), "  - HV max path length: %.2fm", HV_MAX_PATH_LENGTH);
-        RCLCPP_INFO(this->get_logger(), "  - CAV tip meets HV rear -> FOLLOW");
-        RCLCPP_INFO(this->get_logger(), "  - CAV tip meets HV path/center -> STOP");
-        RCLCPP_INFO(this->get_logger(), "============================================================");
+        // RCLCPP_INFO(this->get_logger(), "============================================================");
+        // RCLCPP_INFO(this->get_logger(), "Collision Avoidance Node v35.0");
+        // RCLCPP_INFO(this->get_logger(), "Features:");
+        // RCLCPP_INFO(this->get_logger(), "  - HV from behind detection (%.2fm back)", HV_REAR_OFFSET);
+        // RCLCPP_INFO(this->get_logger(), "  - HV max path length: %.2fm", HV_MAX_PATH_LENGTH);
+        // RCLCPP_INFO(this->get_logger(), "  - CAV tip meets HV rear -> FOLLOW");
+        // RCLCPP_INFO(this->get_logger(), "  - CAV tip meets HV path/center -> STOP");
+        // RCLCPP_INFO(this->get_logger(), "============================================================");
 
         init_node_positions();
         init_hv_global_paths();
@@ -307,8 +307,8 @@ namespace bisa
         double dist_entry_to_center = entry_pos.dist_to(get_roundabout_center());
         if (dist_to_center < dist_entry_to_center - 0.3)
         {
-            if (!state.passed_entry)
-                RCLCPP_INFO(this->get_logger(), ">>> CAV%s PASSED entry!", format_cav_id(cav_id).c_str());
+            // if (!state.passed_entry)
+            //     RCLCPP_INFO(this->get_logger(), ">>> CAV%s PASSED entry!", format_cav_id(cav_id).c_str());
             state.passed_entry = true;
         }
         if (dist_to_center > ROUNDABOUT_RADIUS)
@@ -391,7 +391,7 @@ namespace bisa
         {
             state.global_path.push_back(Point2D(pose.pose.position.x, pose.pose.position.y));
         }
-        RCLCPP_INFO(this->get_logger(), "CAV%s Global Path: %zu pts", format_cav_id(cav_id).c_str(), state.global_path.size());
+        // RCLCPP_INFO(this->get_logger(), "CAV%s Global Path: %zu pts", format_cav_id(cav_id).c_str(), state.global_path.size());
     }
 
     void CollisionAvoidanceNode::lap_info_callback(const bisa::msg::LapInfo::SharedPtr msg, int cav_id)
@@ -676,8 +676,8 @@ namespace bisa
                 // ★★★ HV가 뒤에서 오면 무시 ★★★
                 if (hv_from_behind)
                 {
-                    RCLCPP_DEBUG(this->get_logger(), "CAV%s: HV%d from behind, ignore",
-                                 format_cav_id(cav_id).c_str(), hv_id);
+                    // RCLCPP_DEBUG(this->get_logger(), "CAV%s: HV%d from behind, ignore",
+                    //              format_cav_id(cav_id).c_str(), hv_id);
                     continue; // 다음 HV 확인
                 }
 
@@ -834,15 +834,15 @@ namespace bisa
                 }
             }
 
-            if (should_stop != state.stop_flag || should_slow != state.slow_flag)
-            {
-                if (should_stop)
-                    RCLCPP_WARN(this->get_logger(), "STOP CAV%s: %s", format_cav_id(cav_id).c_str(), reason.c_str());
-                else if (should_slow)
-                    RCLCPP_INFO(this->get_logger(), "SLOW CAV%s: %s", format_cav_id(cav_id).c_str(), reason.c_str());
-                else
-                    RCLCPP_INFO(this->get_logger(), "GO CAV%s", format_cav_id(cav_id).c_str());
-            }
+            // if (should_stop != state.stop_flag || should_slow != state.slow_flag)
+            // {
+            //     if (should_stop)
+            //         RCLCPP_WARN(this->get_logger(), "STOP CAV%s: %s", format_cav_id(cav_id).c_str(), reason.c_str());
+            //     else if (should_slow)
+            //         RCLCPP_INFO(this->get_logger(), "SLOW CAV%s: %s", format_cav_id(cav_id).c_str(), reason.c_str());
+            //     else
+            //         RCLCPP_INFO(this->get_logger(), "GO CAV%s", format_cav_id(cav_id).c_str());
+            // }
             state.stop_flag = should_stop;
             state.slow_flag = should_slow;
 
@@ -885,7 +885,7 @@ namespace bisa
                 if (state.correction_start_time == 0.0)
                 {
                     state.correction_start_time = get_current_time();
-                    RCLCPP_INFO(this->get_logger(), "CAV%s: Correction start (BWD 0.4s)", format_cav_id(cav_id).c_str());
+                    // RCLCPP_INFO(this->get_logger(), "CAV%s: Correction start (BWD 0.4s)", format_cav_id(cav_id).c_str());
                 }
 
                 double elapsed = get_current_time() - state.correction_start_time;
@@ -900,7 +900,7 @@ namespace bisa
                     state.correction_done = true;
                     msg.linear.x = 0.0;
                     msg.angular.z = 0.0;
-                    RCLCPP_INFO(this->get_logger(), "CAV%s: Correction done", format_cav_id(cav_id).c_str());
+                    // RCLCPP_INFO(this->get_logger(), "CAV%s: Correction done", format_cav_id(cav_id).c_str());
                 }
             }
             else if (!should_stop)
@@ -1161,24 +1161,24 @@ namespace bisa
 
     void CollisionAvoidanceNode::log_hv_debug()
     {
-        RCLCPP_INFO(this->get_logger(), "--- Status ---");
+        // RCLCPP_INFO(this->get_logger(), "--- Status ---");
         for (int hv_id : hv_ids_)
         {
             const auto &hv = hv_states_[hv_id];
             if (hv.valid)
             {
-                RCLCPP_INFO(this->get_logger(), "HV%d: pos=(%.2f,%.2f) rear=(%.2f,%.2f)",
-                            hv_id, hv.position.x, hv.position.y, hv.rear_point.x, hv.rear_point.y);
+                // RCLCPP_INFO(this->get_logger(), "HV%d: pos=(%.2f,%.2f) rear=(%.2f,%.2f)",
+                //             hv_id, hv.position.x, hv.position.y, hv.rear_point.x, hv.rear_point.y);
             }
         }
         for (int cav_id : cav_ids_)
         {
             const auto &s = cav_states_[cav_id];
-            RCLCPP_INFO(this->get_logger(), "CAV%s: %s %s entry=%s",
-                        format_cav_id(cav_id).c_str(),
-                        s.stop_flag ? "STOP" : (s.slow_flag ? "SLOW" : "GO"),
-                        hv_debug_info_[cav_id].c_str(),
-                        s.passed_entry ? "Y" : "N");
+            // RCLCPP_INFO(this->get_logger(), "CAV%s: %s %s entry=%s",
+            //             format_cav_id(cav_id).c_str(),
+            //             s.stop_flag ? "STOP" : (s.slow_flag ? "SLOW" : "GO"),
+            //             hv_debug_info_[cav_id].c_str(),
+            //             s.passed_entry ? "Y" : "N");
         }
     }
 
