@@ -1,0 +1,60 @@
+# cav_config.yaml
+/**:
+  ros__parameters:
+    cav_ids: [1,2,3,4]
+    high_priority_ids: [1,2]
+
+# 슬롯 01
+mpc_tracker_cav01:
+  ros__parameters:
+    Q_pos: 143.6   
+    Q_heading: 139.4
+    R_v: 0.5
+    R_w: 2.9
+    max_velocity: 1.2
+    max_accel: 1.5
+    max_angular_vel: 1.8
+    horizon: 200
+
+# 슬롯 02
+mpc_tracker_cav02:
+  ros__parameters:
+    Q_pos: 154.3   
+    Q_heading: 139.4
+    R_v: 0.5
+    R_w: 2.9
+    max_velocity: 1.2
+    max_accel: 1.5
+    max_angular_vel: 2.1
+    horizon: 200
+
+# 슬롯 03
+mpc_tracker_cav03:
+  ros__parameters:
+    Q_pos: 41.5    
+    Q_heading: 11.7
+    R_v: 0.5
+    R_w: 1.3
+    max_velocity: 1.2
+    max_accel: 1.5
+    max_angular_vel: 2.8
+    horizon: 109
+
+# 슬롯 04
+mpc_tracker_cav04:
+  ros__parameters:
+    Q_pos: 47.9    
+    Q_heading: 7.4
+    R_v: 0.5
+    R_w: 1.3
+    max_velocity: 1.2
+    max_accel: 1.5
+    max_angular_vel: 2.8
+    horizon: 109
+
+# HV 설정
+hv_settings:
+  - id: 19
+    node_sequence: [38, 41, 62, 38]
+  - id: 20
+    node_sequence: [38, 41, 62, 38]
