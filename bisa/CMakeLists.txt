@@ -111,10 +111,10 @@ install(PROGRAMS
 
 # C++ 실행 파일 설치
 install(TARGETS
+  synchronized_start_node
   local_path_pub_cpp
   mpc_path_tracker_cpp
   collision_avoidance_node_cpp
-  synchronized_start_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
