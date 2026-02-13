@@ -1,5 +1,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/accel.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <map>
 #include <vector>
 #include <string>
@@ -33,50 +34,62 @@ public:
             target_ids_.push_back(id);
         }
 
-        RCLCPP_INFO(this->get_logger(), "Waiting for %zu CAVs to be ready...", target_ids_.size());
+        // ROS2 서비스 생성 - 시작 신호를 받기 위한 서비스
+        start_service_ = this->create_service<std_srvs::srv::Trigger>(
+            "start_race",
+            std::bind(&SynchronizedStartNode::start_race_callback, this,
+                      std::placeholders::_1, std::placeholders::_2));
 
-        // 키 입력을 대기할 별도 쓰레드 생성
-        input_thread_ = std::thread(&SynchronizedStartNode::wait_for_enter, this);
+        RCLCPP_INFO(this->get_logger(), "Waiting for %zu CAVs to be ready...", target_ids_.size());
+        RCLCPP_INFO(this->get_logger(), "Start service '/start_race' is ready.");
+        RCLCPP_INFO(this->get_logger(), "Call 'ros2 service call /start_race std_srvs/srv/Trigger' to start!");
     }
 
     ~SynchronizedStartNode()
     {
-        if (input_thread_.joinable())
-        {
-            input_thread_.detach(); // 노드 종료 시 쓰레드 분리
-        }
     }
 
 private:
-    void wait_for_enter()
+    void start_race_callback(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
     {
-        while (rclcpp::ok())
+        (void)request; // unused parameter
+
+        if (!all_ready_)
         {
-            if (all_ready_ && !is_started_)
-            {
-                std::cout << "\n========================================" << std::endl;
-                std::cout << "  ALL CAVs READY! PRESS [ENTER] TO START!" << std::endl;
-                std::cout << "========================================\n"
-                          << std::endl;
-
-                std::cin.get(); // 엔터 키 입력 대기 (블로킹)
-
-                RCLCPP_INFO(this->get_logger(), "RELEASE THE KRAKEN! (Simultaneous Start)");
-                is_started_ = true;
-
-                // 엔터 누르는 즉시 버퍼에 저장된 최신 값 발행
-                publish_buffered_data();
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            response->success = false;
+            response->message = "Not all CAVs are ready yet!";
+            RCLCPP_WARN(this->get_logger(), "Start request rejected: Not all CAVs ready (%zu/%zu)",
+                        initial_buffer_.size(), target_ids_.size());
+            return;
         }
+
+        if (is_started_)
+        {
+            response->success = false;
+            response->message = "Race already started!";
+            RCLCPP_WARN(this->get_logger(), "Start request rejected: Already started");
+            return;
+        }
+
+        // 레이스 시작!
+        RCLCPP_INFO(this->get_logger(), "========================================");
+        RCLCPP_INFO(this->get_logger(), "  RELEASE THE KRAKEN! (Simultaneous Start)");
+        RCLCPP_INFO(this->get_logger(), "========================================");
+
+        is_started_ = true;
+        publish_buffered_data();
+
+        response->success = true;
+        response->message = "Race started successfully!";
     }
 
     void accel_callback(int id, const geometry_msgs::msg::Accel::SharedPtr msg)
     {
         if (is_started_)
         {
-            // 출발 이후에는 딜레이 없이 즉시 통과
+            // 출발 이후에는 드레이 없이 즉시 통과
             publishers_[id]->publish(*msg);
             return;
         }
@@ -90,9 +103,16 @@ private:
         }
         initial_buffer_[id] = *msg;
 
-        if (initial_buffer_.size() == target_ids_.size())
+        if (initial_buffer_.size() == target_ids_.size() && !all_ready_)
         {
             all_ready_ = true;
+            RCLCPP_INFO(this->get_logger(), "");
+            RCLCPP_INFO(this->get_logger(), "========================================");
+            RCLCPP_INFO(this->get_logger(), "  ALL CAVs READY!");
+            RCLCPP_INFO(this->get_logger(), "  Call service to start:");
+            RCLCPP_INFO(this->get_logger(), "  ros2 service call /start_race std_srvs/srv/Trigger");
+            RCLCPP_INFO(this->get_logger(), "========================================");
+            RCLCPP_INFO(this->get_logger(), "");
         }
     }
 
@@ -112,8 +132,8 @@ private:
     std::map<int, geometry_msgs::msg::Accel> initial_buffer_;
     std::map<int, rclcpp::Subscription<geometry_msgs::msg::Accel>::SharedPtr> subscribers_;
     std::map<int, rclcpp::Publisher<geometry_msgs::msg::Accel>::SharedPtr> publishers_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_service_;
 
-    std::thread input_thread_;
     std::mutex buffer_mutex_; // 버퍼 접근 시 충돌 방지
 };
 

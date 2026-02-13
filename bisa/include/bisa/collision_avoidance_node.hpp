@@ -10,7 +10,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/accel.hpp>
 #include <nav_msgs/msg/path.hpp>
-#include <std_msgs/msg/bool.hpp> // [NEW]
+#include <std_msgs/msg/bool.hpp>  // [NEW]
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <bisa/msg/lap_info.hpp>
@@ -67,8 +67,8 @@ namespace bisa
         double current_curvature = 0;
         bool correction_done = false;       // 정차 보정 완료 여부
         double correction_start_time = 0.0; // 보정 시작 시간
-
-        bool has_start_pose = false;    // [NEW] 시작 위치 초기화 여부
+        
+        bool has_start_pose = false;  // [NEW] 시작 위치 초기화 여부
         bool at_start_position = false; // [NEW] 시작 위치 복귀 완료 여부
     };
 
@@ -102,10 +102,6 @@ namespace bisa
 
         // ★★★ HV 로컬패스 최대 길이 ★★★
         static constexpr double HV_MAX_PATH_LENGTH = 1.45;
-
-        // ★★★ CAV 전방 마진 (중심점에서 앞으로 이 거리까지를 "차량 영역"으로 인식) ★★★
-        // HV가 이 지점보다 뒤쪽에 먼저 닿으면 CAV는 계속 주행
-        static constexpr double CAV_FRONT_MARGIN = 0.17;
 
         static constexpr double PATH_CROSS_DIST = 0.10;
         static constexpr double COLLISION_RADIUS = 0.15;

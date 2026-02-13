@@ -14,6 +14,7 @@ find_package(nav_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 # 메시지 생성
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -94,7 +95,9 @@ add_executable(synchronized_start_node
   src/synchronized_start_node.cpp
 )
 ament_target_dependencies(synchronized_start_node
-  rclcpp geometry_msgs
+  rclcpp
+  geometry_msgs
+  std_srvs
 )
 
 # Python 스크립트 설치

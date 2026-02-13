@@ -54,6 +54,17 @@ def generate_launch_description():
 
     nodes = []
 
+    # 동기화 노드
+    nodes.append(
+        Node(
+            package="bisa",
+            executable="synchronized_start_node",
+            name="synchronized_start_node",
+            output="screen",
+            parameters=[ros_params_dict],
+        )
+    )
+
     # ---------------------------------------------------------
     # 2. 공통 노드 및 GUI 실행
     # ---------------------------------------------------------
@@ -72,17 +83,6 @@ def generate_launch_description():
             package="bisa",
             executable="collision_avoidance_node_cpp",
             name="collision_avoidance_node",
-            output="screen",
-            parameters=[ros_params_dict],
-        )
-    )
-
-    # 동기화 노드
-    nodes.append(
-        Node(
-            package="bisa",
-            executable="synchronized_start_node",
-            name="synchronized_start_node",
             output="screen",
             parameters=[ros_params_dict],
         )
@@ -186,16 +186,5 @@ def generate_launch_description():
                 ],
             )
         )
-
-    # 5. RViz2
-    nodes.append(
-        Node(
-            package="rviz2",
-            executable="rviz2",
-            name="rviz2",
-            arguments=["-d", rviz_config],
-            output="screen",
-        )
-    )
 
     return LaunchDescription(nodes)
